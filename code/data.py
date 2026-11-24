@@ -38,6 +38,18 @@ FOLDS = {
 }
 
 
+# Variables del estado de información y de creencia, agrupadas por familia para la ablación.
+# Las ventanas se miden en horas de calendario.
+FAMILIAS = {
+    "rendimientos": ["ret_1h", "ret_4h", "ret_24h", "ret_168h"],
+    "volatilidad": ["vol_24h", "vol_168h", "parkinson_24h", "ratio_vol"],
+    "tendencia": ["dist_media_168h", "dist_media_720h", "caida_maximo_720h"],
+    "volumen": ["volumen_z_168h"],
+    "creencia": ["sigma_ewma", "tstat_tendencia_168h"],
+}
+VARIABLES = [variable for familia in FAMILIAS.values() for variable in familia]
+
+
 def leer_csv(ruta: Path = RUTA_CSV) -> pd.DataFrame:
     """Lee el CSV tal como viene de Canvas, sin modificarlo.
 
@@ -132,3 +144,57 @@ def particionar(datos: pd.DataFrame, fold: int) -> dict[str, pd.DataFrame]:
         "validacion": datos[anio == anio_validacion],
         "prueba": datos[anio == anio_prueba],
     }
+
+
+def _precio_hace(close: pd.Series, horas: int) -> pd.Series:
+    """Último precio de cierre disponible hace al menos `horas` horas. Solo mira al pasado."""
+    pasado = close.reindex(close.index - pd.Timedelta(hours=horas), method="ffill")
+    return pd.Series(pasado.to_numpy(), index=close.index)
+
+
+def calcular_variables(datos: pd.DataFrame) -> pd.DataFrame:
+    """Calcula las variables del estado de información y de creencia.
+
+    Todas son causales: el valor en la hora t usa solo barras ya cerradas hasta t. Las ventanas
+    se miden en horas de calendario ('24h', '168h', '720h'), así que un hueco en los datos deja
+    menos barras dentro de la ventana en lugar de estirarla. Las primeras semanas quedan en NaN
+    mientras las ventanas se llenan.
+
+    Familias:
+    - rendimientos: rendimiento logarítmico de las últimas 1, 4, 24 y 168 horas.
+    - volatilidad: desviación de los rendimientos horarios en 24 y 168 horas, estimador de
+      Parkinson con el rango alto-bajo de 24 horas y el cociente entre volatilidad corta y larga.
+    - tendencia: distancia del precio a su media de 168 y 720 horas y caída desde el máximo de
+      720 horas.
+    - volumen: puntaje z del volumen en USDT (en logaritmo) frente a sus últimas 168 horas.
+    - creencia: volatilidad estimada con EWMA (lambda = 0.94) y estadístico t de la tendencia
+      de 168 horas (rendimiento medio dividido entre su error estándar).
+    """
+    close = datos["close"]
+    log_close = np.log(close)
+    # Rendimiento entre barras consecutivas, llevado a escala horaria cuando hay un hueco.
+    r = log_close.diff() / np.sqrt(datos["horas_desde_anterior"])
+    v = pd.DataFrame(index=datos.index)
+
+    for horas in (1, 4, 24, 168):
+        v[f"ret_{horas}h"] = log_close - np.log(_precio_hace(close, horas))
+
+    v["vol_24h"] = r.rolling("24h", min_periods=12).std()
+    v["vol_168h"] = r.rolling("168h", min_periods=84).std()
+    rango = np.log(datos["high"] / datos["low"]) ** 2 / (4 * np.log(2))
+    v["parkinson_24h"] = np.sqrt(rango.rolling("24h", min_periods=12).mean())
+    v["ratio_vol"] = v["vol_24h"] / v["vol_168h"]
+
+    v["dist_media_168h"] = close / close.rolling("168h", min_periods=84).mean() - 1
+    v["dist_media_720h"] = close / close.rolling("720h", min_periods=360).mean() - 1
+    v["caida_maximo_720h"] = close / close.rolling("720h", min_periods=360).max() - 1
+
+    log_volumen = np.log1p(datos["volume_usdt"])
+    media = log_volumen.rolling("168h", min_periods=84).mean()
+    desviacion = log_volumen.rolling("168h", min_periods=84).std()
+    v["volumen_z_168h"] = (log_volumen - media) / desviacion
+
+    v["sigma_ewma"] = np.sqrt((r**2).ewm(alpha=0.06, adjust=False).mean())
+    n = r.rolling("168h", min_periods=84).count()
+    v["tstat_tendencia_168h"] = r.rolling("168h", min_periods=84).mean() / (v["vol_168h"] / np.sqrt(n))
+    return v[VARIABLES]

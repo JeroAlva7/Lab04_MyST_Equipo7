@@ -10,6 +10,7 @@ Responsabilidades (secciones 3.1, 3.2 y 3.6 de los lineamientos):
   cambios a validación y prueba.
 - Calcular los estadísticos del análisis exploratorio y del análisis de variables por fold.
 """
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -198,3 +199,63 @@ def calcular_variables(datos: pd.DataFrame) -> pd.DataFrame:
     n = r.rolling("168h", min_periods=84).count()
     v["tstat_tendencia_168h"] = r.rolling("168h", min_periods=84).mean() / (v["vol_168h"] / np.sqrt(n))
     return v[VARIABLES]
+
+
+class Normalizador:
+    """Normalización z con los estadísticos del entrenamiento de un fold.
+
+    Se ajusta una sola vez con el entrenamiento y se aplica sin cambios a validación y prueba
+    (sección 3.1), así que cada fold tiene su propio normalizador. Los valores se recortan a
+    +-LIMITE desviaciones: con colas tan pesadas (curtosis cercana a 30) y horas sin volumen,
+    un solo dato extremo dominaría la entrada de la red.
+    """
+
+    LIMITE = 5.0
+
+    def __init__(self) -> None:
+        self.media: pd.Series | None = None
+        self.desviacion: pd.Series | None = None
+
+    def ajustar(self, entrenamiento: pd.DataFrame) -> "Normalizador":
+        """Calcula media y desviación estándar de cada variable con el entrenamiento."""
+        self.media = entrenamiento.mean()
+        self.desviacion = entrenamiento.std(ddof=0).replace(0.0, 1.0)
+        return self
+
+    def transformar(self, variables: pd.DataFrame) -> pd.DataFrame:
+        """Aplica la normalización ya ajustada, sin recalcular nada."""
+        if self.media is None or self.desviacion is None:
+            raise RuntimeError("El normalizador debe ajustarse con el entrenamiento antes de usarse.")
+        z = (variables[self.media.index] - self.media) / self.desviacion
+        return z.clip(-self.LIMITE, self.LIMITE)
+
+    def a_dict(self) -> dict:
+        """Estadísticos en un formato que se puede guardar como JSON."""
+        return {"media": self.media.to_dict(), "desviacion": self.desviacion.to_dict(), "limite": self.LIMITE}
+
+
+@dataclass
+class ParteFold:
+    """Una parte de un fold: las barras para simular la ejecución y sus observaciones normalizadas."""
+
+    barras: pd.DataFrame
+    observaciones: pd.DataFrame
+
+
+def preparar_fold(datos: pd.DataFrame, fold: int) -> tuple[dict[str, ParteFold], Normalizador]:
+    """Arma entrenamiento, validación y prueba de un fold con su normalizador.
+
+    Las variables se calculan sobre la serie completa, lo cual es válido porque cada una es
+    causal, y se descartan las horas iniciales en las que alguna ventana todavía no se llena.
+    El normalizador se ajusta solo con las observaciones de entrenamiento.
+    """
+    variables = calcular_variables(datos)
+    validas = variables.notna().all(axis=1)
+    barras = particionar(datos[validas], fold)
+    observaciones = particionar(variables[validas], fold)
+    normalizador = Normalizador().ajustar(observaciones["entrenamiento"])
+    partes = {
+        nombre: ParteFold(barras=barras[nombre], observaciones=normalizador.transformar(observaciones[nombre]))
+        for nombre in barras
+    }
+    return partes, normalizador

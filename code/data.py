@@ -28,6 +28,16 @@ COLUMNAS = {
     "tradecount": "trades",
 }
 
+# Fold: (último año de entrenamiento, año de validación, año de prueba). Ventana expansiva:
+# el entrenamiento siempre empieza en 2017-08 y crece un año por fold (sección 3.6).
+FOLDS = {
+    1: (2021, 2022, 2023),
+    2: (2022, 2023, 2024),
+    3: (2023, 2024, 2025),
+    4: (2024, 2025, 2026),
+}
+
+
 def leer_csv(ruta: Path = RUTA_CSV) -> pd.DataFrame:
     """Lee el CSV tal como viene de Canvas, sin modificarlo.
 
@@ -107,3 +117,18 @@ def limpiar(crudo: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
 def cargar_datos(ruta: Path = RUTA_CSV) -> tuple[pd.DataFrame, dict]:
     """Lee y limpia el CSV de BTCUSDT horario. Ver limpiar() para el detalle."""
     return limpiar(leer_csv(ruta))
+
+
+def particionar(datos: pd.DataFrame, fold: int) -> dict[str, pd.DataFrame]:
+    """Divide los datos en entrenamiento, validación y prueba para un fold.
+
+    Usa años calendario completos según la tabla de la sección 3.6. Las tres partes no se
+    traslapan y respetan el orden del tiempo: entrenamiento < validación < prueba.
+    """
+    fin_entrenamiento, anio_validacion, anio_prueba = FOLDS[fold]
+    anio = datos.index.year
+    return {
+        "entrenamiento": datos[anio <= fin_entrenamiento],
+        "validacion": datos[anio == anio_validacion],
+        "prueba": datos[anio == anio_prueba],
+    }

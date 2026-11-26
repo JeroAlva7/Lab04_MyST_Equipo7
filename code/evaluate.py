@@ -18,6 +18,7 @@ import pandas as pd
 RUTA_SP500 = Path(__file__).resolve().parents[1] / "data" / "raw" / "sp500_diario.csv"
 HORA_CIERRE_SP500_UTC = 21  # 16:00 en Nueva York: cada cierre se usa a partir de esta hora
 DIAS_POR_ANIO = 365.25  # BTCUSDT opera 24/7: se anualiza con días calendario
+COSTO_POR_LADO = 0.00125  # 0.125 % sobre el monto de cada compra o venta (sección 3.7)
 
 
 def cargar_sp500(ruta: Path = RUTA_SP500) -> pd.Series:
@@ -49,6 +50,26 @@ def sp500_horario(cierres: pd.Series, indice: pd.DatetimeIndex) -> pd.Series:
     con_hora.index = con_hora.index + pd.Timedelta(hours=HORA_CIERRE_SP500_UTC)
     malla = con_hora.reindex(con_hora.index.union(indice)).ffill()
     return malla.reindex(indice).rename("sp500")
+
+
+def comprar_y_mantener(precios: pd.Series, costo: float = COSTO_POR_LADO, capital_inicial: float = 1.0) -> pd.Series:
+    """Curva de capital de comprar en la primera barra y no vender (benchmarks de la sección 3.7).
+
+    Igual que la validación de buy-and-hold del S18: el capital sigue al precio y solo se paga
+    el costo de entrar, capital_t = capital_inicial * (1 - costo) * p_t / p_0. El primer valor
+    es el capital antes de comprar, para que el costo de entrada cuente en las métricas.
+    """
+    capital = capital_inicial * (1 - costo) * precios / precios.iloc[0]
+    capital.iloc[0] = capital_inicial
+    return capital.rename("capital")
+
+
+def benchmarks(barras: pd.DataFrame, cierres_sp500: pd.Series) -> dict[str, pd.Series]:
+    """Curvas de capital de comprar y mantener BTCUSDT y el S&P 500 en las mismas barras."""
+    return {
+        "btc": comprar_y_mantener(barras["close"]),
+        "sp500": comprar_y_mantener(sp500_horario(cierres_sp500, barras.index)),
+    }
 
 
 def anios(indice: pd.DatetimeIndex) -> float:

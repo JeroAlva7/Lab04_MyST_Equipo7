@@ -263,10 +263,17 @@ class Normalizador:
 
 @dataclass
 class ParteFold:
-    """Una parte de un fold: las barras para simular la ejecución y sus observaciones normalizadas."""
+    """Una parte de un fold, con el mismo índice horario en sus tres campos.
+
+    - barras: OHLCV para simular la ejecución.
+    - observaciones: las variables normalizadas que ve el agente.
+    - volatilidad: sigma_ewma sin normalizar, en escala horaria; el entorno la usa para colocar el
+      stop-loss y el take-profit.
+    """
 
     barras: pd.DataFrame
     observaciones: pd.DataFrame
+    volatilidad: pd.Series
 
 
 def preparar_fold(datos: pd.DataFrame, fold: int) -> tuple[dict[str, ParteFold], Normalizador]:
@@ -282,7 +289,8 @@ def preparar_fold(datos: pd.DataFrame, fold: int) -> tuple[dict[str, ParteFold],
     observaciones = particionar(variables[validas], fold)
     normalizador = Normalizador().ajustar(observaciones["entrenamiento"])
     partes = {
-        nombre: ParteFold(barras=barras[nombre], observaciones=normalizador.transformar(observaciones[nombre]))
+        nombre: ParteFold(barras=barras[nombre], observaciones=normalizador.transformar(observaciones[nombre]),
+                          volatilidad=observaciones[nombre]["sigma_ewma"])
         for nombre in barras
     }
     return partes, normalizador

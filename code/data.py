@@ -10,13 +10,30 @@ Responsabilidades (secciones 3.1, 3.2 y 3.6 de los lineamientos):
   cambios a validación y prueba.
 - Calcular los estadísticos del análisis exploratorio y del análisis de variables por fold.
 """
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy import stats
+from statsmodels.tools.sm_exceptions import InterpolationWarning
+from statsmodels.tsa.stattools import adfuller, kpss
 
 RUTA_CSV = Path(__file__).resolve().parents[1] / "data" / "raw" / "Binance_BTCUSDT_1h.csv"
+
+HORAS_POR_ANIO = 24 * 365.25  # BTCUSDT opera todas las horas del año
+
+# Horizonte objetivo de tenencia, en horas. En el entrenamiento de los cuatro folds, el costo de ida
+# y vuelta (0.25 %) equivale a entre 80 % y 93 % del movimiento típico de una hora y a entre 13 % y
+# 16 % del de 24 horas (ver tabla_horizontes), así que plazos más cortos quedan dominados por los
+# costos. El análisis de variables mide su relación con el rendimiento de este mismo plazo.
+HORIZONTE_HORAS = 24
+
+# Un régimen cambia cuando el precio se aleja más de este porcentaje de su último máximo o mínimo.
+# Con umbrales de 25 % a 50 % los rebotes de unos días dentro de un mercado bajista cuentan como
+# regímenes (48 y 13 cambios); con 70 % quedan los siete ciclos mayores de 2017 a 2024.
+UMBRAL_REGIMEN = 0.70
 
 # Nombres de columnas del CSV de CryptoDataDownload y su nombre dentro del proyecto.
 COLUMNAS = {
@@ -147,6 +164,15 @@ def particionar(datos: pd.DataFrame, fold: int) -> dict[str, pd.DataFrame]:
     }
 
 
+def rendimiento_horario(datos: pd.DataFrame) -> pd.Series:
+    """Rendimiento logarítmico entre barras consecutivas, en escala de una hora.
+
+    Cuando la barra anterior está a más de una hora por un hueco en los datos, el rendimiento se
+    divide entre la raíz de las horas transcurridas para que su escala sea comparable.
+    """
+    return np.log(datos["close"]).diff() / np.sqrt(datos["horas_desde_anterior"])
+
+
 def _precio_hace(close: pd.Series, horas: int) -> pd.Series:
     """Último precio de cierre disponible hace al menos `horas` horas. Solo mira al pasado."""
     pasado = close.reindex(close.index - pd.Timedelta(hours=horas), method="ffill")
@@ -173,8 +199,7 @@ def calcular_variables(datos: pd.DataFrame) -> pd.DataFrame:
     """
     close = datos["close"]
     log_close = np.log(close)
-    # Rendimiento entre barras consecutivas, llevado a escala horaria cuando hay un hueco.
-    r = log_close.diff() / np.sqrt(datos["horas_desde_anterior"])
+    r = rendimiento_horario(datos)
     v = pd.DataFrame(index=datos.index)
 
     for horas in (1, 4, 24, 168):
@@ -259,3 +284,182 @@ def preparar_fold(datos: pd.DataFrame, fold: int) -> tuple[dict[str, ParteFold],
         for nombre in barras
     }
     return partes, normalizador
+
+
+# ---------------------------------------------------------------------------------------------
+# Análisis exploratorio y análisis de variables (secciones 3.2 y 3.8, preguntas 1 y 2).
+# Todo se calcula únicamente con datos de entrenamiento.
+# ---------------------------------------------------------------------------------------------
+
+
+def autocorrelacion(serie: np.ndarray, rezagos: int) -> np.ndarray:
+    """Autocorrelación muestral de los rezagos 1 a `rezagos`."""
+    x = np.asarray(serie, dtype=float) - np.mean(serie)
+    denominador = np.dot(x, x)
+    return np.array([np.dot(x[k:], x[:-k]) / denominador for k in range(1, rezagos + 1)])
+
+
+def ljung_box(serie: np.ndarray, rezagos: int) -> tuple[float, float]:
+    """Prueba de Ljung-Box: H0 = no hay autocorrelación en los primeros `rezagos` rezagos."""
+    n = len(serie)
+    rho = autocorrelacion(serie, rezagos)
+    q = n * (n + 2) * np.sum(rho**2 / (n - np.arange(1, rezagos + 1)))
+    return float(q), float(stats.chi2.sf(q, rezagos))
+
+
+def prueba_estacionariedad(serie: pd.Series) -> dict[str, float]:
+    """Pruebas ADF (H0: raíz unitaria) y KPSS (H0: estacionaria) sobre una serie.
+
+    ADF usa un rezago fijo de 24 horas, el ciclo diario de los datos horarios. KPSS solo reporta
+    valores p entre 0.01 y 0.10 (los límites de su tabla), así que un 0.10 significa "0.10 o más".
+    result_object=False pide a statsmodels 0.15 la tupla de siempre y evita su aviso de cambio
+    de formato.
+    Conclusión, con nivel de 5 %:
+    - estacionaria: ADF rechaza la raíz unitaria y KPSS no rechaza la estacionariedad.
+    - persistente: ADF rechaza la raíz unitaria, pero KPSS sí rechaza; la serie regresa a su
+      media, aunque muy lento o con cambios de nivel entre regímenes.
+    - raiz_unitaria: ADF no rechaza y KPSS rechaza, como el precio.
+    - indeterminada: ninguna de las dos rechaza.
+    """
+    valores = serie.dropna().to_numpy()
+    adf_estadistico, adf_p = adfuller(valores, maxlag=24, autolag=None, result_object=False)[:2]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InterpolationWarning)
+        kpss_estadistico, kpss_p = kpss(valores, regression="c", nlags="auto", result_object=False)[:2]
+    if adf_p < 0.05:
+        conclusion = "estacionaria" if kpss_p > 0.05 else "persistente"
+    else:
+        conclusion = "indeterminada" if kpss_p > 0.05 else "raiz_unitaria"
+    return {
+        "adf_estadistico": float(adf_estadistico),
+        "adf_p": float(adf_p),
+        "kpss_estadistico": float(kpss_estadistico),
+        "kpss_p": float(kpss_p),
+        "conclusion": conclusion,
+    }
+
+
+def puntos_de_giro(close: pd.Series, umbral: float = UMBRAL_REGIMEN) -> list[pd.Timestamp]:
+    """Fechas de los máximos y mínimos que separan los regímenes.
+
+    Un régimen alcista termina en su máximo cuando después el precio cae más de `umbral` desde ahí;
+    uno bajista termina en su mínimo cuando el precio sube más de `umbral`. La regla necesita ver
+    la trayectoria completa, así que sirve para describir el pasado y nunca entra al estado.
+    """
+    precios = close.to_numpy()
+    giros, tendencia, extremo = [0], 0, 0
+    for i in range(1, len(precios)):
+        cambio = precios[i] / precios[extremo] - 1
+        if tendencia == 0:
+            if abs(cambio) >= umbral:
+                tendencia, extremo = (1 if cambio > 0 else -1), i
+        elif tendencia * (precios[i] - precios[extremo]) > 0:
+            extremo = i
+        elif -tendencia * cambio >= umbral:
+            giros.append(extremo)
+            tendencia, extremo = -tendencia, i
+    giros.append(len(precios) - 1)
+    return [close.index[k] for k in giros]
+
+
+def regimenes(datos: pd.DataFrame, umbral: float = UMBRAL_REGIMEN) -> pd.DataFrame:
+    """Regímenes del periodo por rango de fechas, con su tendencia, volatilidad y drawdown (pregunta 1)."""
+    close = datos["close"]
+    r = rendimiento_horario(datos)
+    giros = puntos_de_giro(close, umbral)
+    filas = []
+    for inicio, fin in zip(giros[:-1], giros[1:]):
+        precio = close.loc[inicio:fin]
+        retorno = precio.iloc[-1] / precio.iloc[0] - 1
+        filas.append({
+            "inicio": inicio,
+            "fin": fin,
+            "dias": (fin - inicio) / pd.Timedelta(days=1),
+            "tendencia": "alcista" if retorno > 0 else "bajista",
+            "retorno_total": retorno,
+            "volatilidad_anual": r.loc[inicio:fin].iloc[1:].std() * np.sqrt(HORAS_POR_ANIO),
+            "maximo_drawdown": (precio / precio.cummax() - 1).min(),
+        })
+    return pd.DataFrame(filas)
+
+
+def estadisticos_rendimientos(r: pd.Series) -> dict[str, float]:
+    """Forma de la distribución de los rendimientos horarios."""
+    x = r.dropna().to_numpy()
+    z = (x - x.mean()) / x.std()
+    return {
+        "observaciones": float(len(x)),
+        "media": float(x.mean()),
+        "desviacion": float(x.std()),
+        "volatilidad_anual": float(x.std() * np.sqrt(HORAS_POR_ANIO)),
+        "sesgo": float(stats.skew(x)),
+        "curtosis_exceso": float(stats.kurtosis(x)),
+        "jarque_bera_p": float(stats.jarque_bera(x).pvalue),
+        "cuantil_1": float(np.quantile(x, 0.01)),
+        "cuantil_99": float(np.quantile(x, 0.99)),
+        "fraccion_mas_de_3_desviaciones": float(np.mean(np.abs(z) > 3)),
+    }
+
+
+def rendimiento_futuro(close: pd.Series, horas: int) -> pd.Series:
+    """Rendimiento logarítmico de las siguientes `horas` horas (objetivo de análisis, mira al futuro).
+
+    Usa el primer precio disponible a partir de t + horas dentro de la misma serie: si la serie es
+    solo el entrenamiento, las últimas horas quedan en NaN en lugar de tomar precios de validación.
+    """
+    futuro = close.reindex(close.index + pd.Timedelta(hours=horas), method="bfill")
+    return pd.Series(np.log(futuro.to_numpy() / close.to_numpy()), index=close.index)
+
+
+def tabla_horizontes(close: pd.Series, horizontes: tuple[int, ...] = (1, 4, 12, 24, 72, 168)) -> pd.Series:
+    """Mediana del movimiento absoluto del precio en cada plazo, para compararla con los costos."""
+    return pd.Series(
+        {h: float(rendimiento_futuro(close, h).abs().median()) for h in horizontes},
+        name="mediana_movimiento_absoluto",
+    ).rename_axis("horizonte_horas")
+
+
+def tabla_folds(datos: pd.DataFrame) -> pd.DataFrame:
+    """Primera y última barra y número de barras de cada parte de cada fold."""
+    filas = []
+    for fold in FOLDS:
+        for parte, barras in particionar(datos, fold).items():
+            filas.append({"fold": fold, "parte": parte, "inicio": barras.index[0], "fin": barras.index[-1],
+                          "barras": len(barras)})
+    return pd.DataFrame(filas)
+
+
+def resumen_eda(datos: pd.DataFrame, rezagos: int = 168) -> dict[str, pd.DataFrame]:
+    """Tablas del análisis exploratorio, calculadas solo con el entrenamiento de cada fold.
+
+    Devuelve: folds (fechas y barras de cada parte), regimenes y correlacion_variables (Spearman
+    entre las variables del estado), ambas sobre el entrenamiento más largo, el del fold 4, que
+    contiene a los demás; y por fold: distribucion, autocorrelacion (rezagos 1 a 168 de r y |r|),
+    ljung_box, estacionariedad (log precio, r y |r|) y horizontes.
+    """
+    distribucion, autocorrelaciones, ljung, estacionariedad, horizontes = {}, {}, [], [], {}
+    for fold in FOLDS:
+        entrenamiento = particionar(datos, fold)["entrenamiento"]
+        r = rendimiento_horario(entrenamiento).dropna()
+        series = {"log_precio": np.log(entrenamiento["close"]), "rendimiento": r, "rendimiento_absoluto": r.abs()}
+        distribucion[fold] = estadisticos_rendimientos(r)
+        autocorrelaciones[f"rendimiento_fold_{fold}"] = autocorrelacion(r.to_numpy(), rezagos)
+        autocorrelaciones[f"rendimiento_absoluto_fold_{fold}"] = autocorrelacion(r.abs().to_numpy(), rezagos)
+        for nombre in ("rendimiento", "rendimiento_absoluto"):
+            for k in (24, 168):
+                q, p = ljung_box(series[nombre].to_numpy(), k)
+                ljung.append({"fold": fold, "serie": nombre, "rezagos": k, "estadistico": q, "p": p})
+        for nombre, serie in series.items():
+            estacionariedad.append({"fold": fold, "serie": nombre, **prueba_estacionariedad(serie)})
+        horizontes[fold] = tabla_horizontes(entrenamiento["close"])
+    ultimo = particionar(datos, max(FOLDS))["entrenamiento"]
+    return {
+        "folds": tabla_folds(datos),
+        "regimenes": regimenes(ultimo),
+        "correlacion_variables": calcular_variables(ultimo).dropna().corr(method="spearman"),
+        "distribucion": pd.DataFrame(distribucion).T.rename_axis("fold"),
+        "autocorrelacion": pd.DataFrame(autocorrelaciones, index=pd.RangeIndex(1, rezagos + 1, name="rezago")),
+        "ljung_box": pd.DataFrame(ljung),
+        "estacionariedad": pd.DataFrame(estacionariedad),
+        "horizontes": pd.DataFrame(horizontes).rename_axis("horizonte_horas"),
+    }

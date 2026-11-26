@@ -75,6 +75,22 @@ def comprar_y_mantener(precios: pd.Series, costo: float = COSTO_POR_LADO, capita
     return capital.rename("capital")
 
 
+def bitacora_comprar_y_mantener(precios: pd.Series, costo: float = COSTO_POR_LADO, capital_inicial: float = 1.0) -> pd.DataFrame:
+    """La única operación de comprar y mantener, con los mismos números que su curva de capital.
+
+    Compra con todo el capital después del costo de entrada y vende en la última barra.
+    """
+    p0, pT = precios.iloc[0], precios.iloc[-1]
+    tamano = capital_inicial * (1 - costo) / p0
+    pnl_bruto = tamano * (pT - p0)
+    costos = costo * capital_inicial + costo * tamano * pT
+    return pd.DataFrame([{
+        "entrada": precios.index[0], "salida": precios.index[-1], "direccion": 1, "razon_salida": "cierre",
+        "precio_entrada": p0, "precio_salida": pT, "tamano": tamano,
+        "pnl_bruto": pnl_bruto, "costos": costos, "pnl_neto": pnl_bruto - costos,
+    }], columns=COLUMNAS_BITACORA)
+
+
 def benchmarks(barras: pd.DataFrame, cierres_sp500: pd.Series) -> dict[str, pd.Series]:
     """Curvas de capital de comprar y mantener BTCUSDT y el S&P 500 en las mismas barras."""
     return {
@@ -197,3 +213,43 @@ def metricas_operaciones(bitacora: pd.DataFrame, capital: pd.Series) -> dict[str
         "duracion_promedio_h": float(duracion.mean()),
         "rotacion_anual": float(monto / capital.mean() / anios(capital.index)),
     }
+
+
+def alfa(capital: pd.Series, capital_benchmark: pd.Series) -> float:
+    """Retorno en exceso: retorno anualizado de la estrategia menos el del benchmark.
+
+    Se anualiza para que los folds se puedan promediar aunque el 4 dure solo cuatro meses.
+    """
+    return retorno_anualizado(capital) - retorno_anualizado(capital_benchmark)
+
+
+def metricas(capital: pd.Series, bitacora: pd.DataFrame, curvas_benchmark: dict[str, pd.Series]) -> dict[str, float]:
+    """Todas las métricas de la sección 3.7 para una estrategia en un fold."""
+    resultado = metricas_capital(capital) | metricas_operaciones(bitacora, capital)
+    for nombre, curva in curvas_benchmark.items():
+        resultado[f"alfa_{nombre}"] = float(alfa(capital, curva))
+    return resultado
+
+
+def tabla_metricas(resultados: dict[str, dict[int, dict[str, float]]]) -> pd.DataFrame:
+    """Métricas por fold y agregadas, con la forma de artifacts/metrics_summary.csv.
+
+    resultados[estrategia][fold] es la salida de metricas(). Por cada estrategia hay una fila
+    por fold y dos agregadas: la media y la desviación estándar muestral entre folds.
+    """
+    filas = []
+    for estrategia, por_fold in resultados.items():
+        folds = pd.DataFrame.from_dict(por_fold, orient="index")
+        folds.index = folds.index.astype(str)
+        folds.loc["media"] = folds.mean()
+        folds.loc["desviacion"] = folds.iloc[:-1].std()
+        filas.append(folds.rename_axis("fold").reset_index().assign(estrategia=estrategia))
+    tabla = pd.concat(filas, ignore_index=True)
+    return tabla[["estrategia", "fold"] + [c for c in tabla.columns if c not in ("estrategia", "fold")]]
+
+
+def guardar_tabla_metricas(tabla: pd.DataFrame, carpeta: Path = RUTA_ARTEFACTOS) -> Path:
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / "metrics_summary.csv"
+    tabla.to_csv(ruta, index=False)
+    return ruta

@@ -18,7 +18,10 @@ import pandas as pd
 RAIZ = Path(__file__).resolve().parents[1]
 RUTA_SP500 = RAIZ / "data" / "raw" / "sp500_diario.csv"
 RUTA_ARTEFACTOS = RAIZ / "artifacts"
-HORA_CIERRE_SP500_UTC = 21  # 16:00 en Nueva York: cada cierre se usa a partir de esta hora
+# Hora UTC desde la que vale cada cierre del S&P 500. Las 16:00 de Nueva York son las 21:00 UTC en
+# invierno y las 20:00 UTC en verano; usar 21:00 todo el año garantiza que nunca se use un cierre
+# antes de que exista (en verano se usa con una hora de retraso).
+HORA_CIERRE_SP500_UTC = 21
 DIAS_POR_ANIO = 365.25  # BTCUSDT opera 24/7: se anualiza con días calendario
 COSTO_POR_LADO = 0.00125  # 0.125 % sobre el monto de cada compra o venta (sección 3.7)
 
@@ -36,6 +39,9 @@ def cargar_sp500(ruta: Path = RUTA_SP500) -> pd.Series:
     La primera vez se descargan con yfinance y se guardan en data/raw/sp500_diario.csv; desde
     entonces se leen del CSV, así el pipeline no depende de internet y siempre usa los mismos
     datos. Solo se usan para el benchmark (sección 3.7): nunca entran al estado del agente.
+
+    Supuesto: ^GSPC es un índice de precio y no incluye dividendos (del orden de 1.5 % anual), así
+    que el benchmark subestima ligeramente lo que habría ganado un fondo indexado.
     """
     if not ruta.exists():
         import yfinance as yf  # solo se importa si hay que descargar
@@ -52,7 +58,7 @@ def cargar_sp500(ruta: Path = RUTA_SP500) -> pd.Series:
 def sp500_horario(cierres: pd.Series, indice: pd.DatetimeIndex) -> pd.Series:
     """Lleva los cierres diarios del S&P 500 a la malla horaria de BTCUSDT.
 
-    Cada cierre vale a partir de las 21:00 UTC de su día (16:00 en Nueva York) y se mantiene hasta
+    Cada cierre vale a partir de las HORA_CIERRE_SP500_UTC (21:00 UTC) de su día y se mantiene hasta
     el siguiente cierre: en las noches y los fines de semana el índice no cambia.
     """
     con_hora = cierres.copy()
@@ -91,12 +97,14 @@ def bitacora_comprar_y_mantener(precios: pd.Series, costo: float = COSTO_POR_LAD
     }], columns=COLUMNAS_BITACORA)
 
 
+def precios_benchmark(barras: pd.DataFrame, cierres_sp500: pd.Series) -> dict[str, pd.Series]:
+    """Precios de BTCUSDT y del S&P 500 en la malla horaria de las barras de un periodo."""
+    return {"btc": barras["close"], "sp500": sp500_horario(cierres_sp500, barras.index)}
+
+
 def benchmarks(barras: pd.DataFrame, cierres_sp500: pd.Series) -> dict[str, pd.Series]:
     """Curvas de capital de comprar y mantener BTCUSDT y el S&P 500 en las mismas barras."""
-    return {
-        "btc": comprar_y_mantener(barras["close"]),
-        "sp500": comprar_y_mantener(sp500_horario(cierres_sp500, barras.index)),
-    }
+    return {nombre: comprar_y_mantener(precios) for nombre, precios in precios_benchmark(barras, cierres_sp500).items()}
 
 
 def anios(indice: pd.DatetimeIndex) -> float:
@@ -119,6 +127,7 @@ def rendimientos(capital: pd.Series) -> pd.Series:
 
 
 def retorno_total(capital: pd.Series) -> float:
+    """Ganancia o pérdida acumulada del periodo como fracción del capital inicial."""
     return capital.iloc[-1] / capital.iloc[0] - 1
 
 
@@ -128,6 +137,7 @@ def retorno_anualizado(capital: pd.Series) -> float:
 
 
 def volatilidad_anualizada(capital: pd.Series) -> float:
+    """Desviación estándar de los rendimientos barra a barra llevada a escala anual."""
     return rendimientos(capital).std() * np.sqrt(periodos_por_anio(capital))
 
 
@@ -137,6 +147,7 @@ def drawdown(capital: pd.Series) -> pd.Series:
 
 
 def maximo_drawdown(capital: pd.Series) -> float:
+    """La peor caída desde un máximo previo durante el periodo (valor negativo)."""
     return drawdown(capital).min()
 
 
@@ -231,6 +242,20 @@ def metricas(capital: pd.Series, bitacora: pd.DataFrame, curvas_benchmark: dict[
     return resultado
 
 
+def metricas_benchmarks(barras: pd.DataFrame, cierres_sp500: pd.Series) -> dict[str, dict[str, float]]:
+    """Métricas de la sección 3.7 de los dos benchmarks en las barras de un periodo.
+
+    Cada benchmark es una sola operación (comprar al inicio y vender al final), así que su bitácora
+    sale de bitacora_comprar_y_mantener() y sus métricas se calculan igual que las del agente.
+    """
+    precios = precios_benchmark(barras, cierres_sp500)
+    curvas = {nombre: comprar_y_mantener(serie) for nombre, serie in precios.items()}
+    return {
+        nombre: metricas(curvas[nombre], bitacora_comprar_y_mantener(precios[nombre]), curvas)
+        for nombre in precios
+    }
+
+
 def tabla_metricas(resultados: dict[str, dict[int, dict[str, float]]]) -> pd.DataFrame:
     """Métricas por fold y agregadas, con la forma de artifacts/metrics_summary.csv.
 
@@ -249,6 +274,7 @@ def tabla_metricas(resultados: dict[str, dict[int, dict[str, float]]]) -> pd.Dat
 
 
 def guardar_tabla_metricas(tabla: pd.DataFrame, carpeta: Path = RUTA_ARTEFACTOS) -> Path:
+    """Escribe artifacts/metrics_summary.csv."""
     carpeta.mkdir(parents=True, exist_ok=True)
     ruta = carpeta / "metrics_summary.csv"
     tabla.to_csv(ruta, index=False)

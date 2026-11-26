@@ -76,8 +76,11 @@ pytest
 
 ## Datos
 
-`data/raw/Binance_BTCUSDT_1h.csv`: archivo publicado en Canvas (fuente: CryptoDataDownload, Binance) con
-barras horarias OHLCV de BTCUSDT del 2017-08-17 04:00 al 2026-04-26 23:00.
+- `data/raw/Binance_BTCUSDT_1h.csv`: archivo publicado en Canvas (fuente: CryptoDataDownload, Binance) con
+  barras horarias OHLCV de BTCUSDT del 2017-08-17 04:00 al 2026-04-26 23:00.
+- `data/raw/sp500_diario.csv`: cierres diarios del índice S&P 500 (^GSPC, Yahoo Finance mediante yfinance)
+  del 2017-08-01 al 2026-04-27. Se usan solo para el benchmark de indexar al S&P 500 y nunca entran al
+  estado del agente. ^GSPC es un índice de precio, así que el benchmark no incluye dividendos.
 
 ## Uso de herramientas de IA
 

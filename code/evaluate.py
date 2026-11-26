@@ -53,14 +53,16 @@ def sp500_horario(cierres: pd.Series, indice: pd.DatetimeIndex) -> pd.Series:
 
 
 def comprar_y_mantener(precios: pd.Series, costo: float = COSTO_POR_LADO, capital_inicial: float = 1.0) -> pd.Series:
-    """Curva de capital de comprar en la primera barra y no vender (benchmarks de la sección 3.7).
+    """Curva de capital de comprar en la primera barra y vender en la última (sección 3.7).
 
-    Igual que la validación de buy-and-hold del S18: el capital sigue al precio y solo se paga
-    el costo de entrar, capital_t = capital_inicial * (1 - costo) * p_t / p_0. El primer valor
-    es el capital antes de comprar, para que el costo de entrada cuente en las métricas.
+    Parte de la fórmula de buy-and-hold del S18, capital_t = capital_inicial * (1 - costo) * p_t / p_0,
+    y además cobra la venta en la última barra: el agente cierra sus posiciones pagando la salida,
+    así que el benchmark también. El primer valor es el capital antes de comprar, para que el
+    costo de entrada cuente en las métricas.
     """
     capital = capital_inicial * (1 - costo) * precios / precios.iloc[0]
     capital.iloc[0] = capital_inicial
+    capital.iloc[-1] *= 1 - costo
     return capital.rename("capital")
 
 

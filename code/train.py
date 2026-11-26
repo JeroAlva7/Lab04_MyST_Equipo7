@@ -14,12 +14,14 @@ from stable_baselines3.common.buffers import ReplayBuffer, RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
 
-# Clave de info donde el entorno reporta cuántas barras duró la decisión (sección 3.3).
+# Clave de info donde el entorno reporta cuántas horas duró la decisión (sección 3.3). Se mide en
+# horas de calendario y no en barras: los datos tienen huecos, y el descuento debe reflejar el
+# tiempo que de verdad pasó.
 CLAVE_DURACION = "duracion"
 
 
 def duraciones_de(infos: list[dict]) -> np.ndarray:
-    """Duración de la decisión en barras para cada entorno; 1 si el entorno no la reporta."""
+    """Duración de la decisión en horas para cada entorno; 1 si el entorno no la reporta."""
     return np.array([info.get(CLAVE_DURACION, 1) for info in infos], dtype=np.float32)
 
 
@@ -29,7 +31,7 @@ class ReplayBufferSemiMarkov(ReplayBuffer):
     Guarda en cada transición (estado en la apertura, acción, recompensa en el cierre, estado en el
     cierre) la duración real tau y la entrega como discounts = gamma^tau. DQN.train de SB3 2.9.2 ya
     usa replay_data.discounts en el target: r + (1 - done) * discounts * max_a' Q(s', a'). Así una
-    posición que duró 24 barras descuenta su futuro con gamma^24 y no con gamma.
+    posición que duró 24 horas descuenta su futuro con gamma^24 y no con gamma.
 
     Se usa con DQN(..., replay_buffer_class=ReplayBufferSemiMarkov,
                    replay_buffer_kwargs={"gamma": gamma}), con el mismo gamma del modelo.

@@ -17,11 +17,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy import stats
+from sklearn.feature_selection import mutual_info_regression
 from statsmodels.tools.sm_exceptions import InterpolationWarning
 from statsmodels.tsa.stattools import adfuller, kpss
 
 RUTA_CSV = Path(__file__).resolve().parents[1] / "data" / "raw" / "Binance_BTCUSDT_1h.csv"
 
+SEMILLA = 42  # semilla única del proyecto (sección 2.2)
 HORAS_POR_ANIO = 24 * 365.25  # BTCUSDT opera todas las horas del año
 
 # Horizonte objetivo de tenencia, en horas. En el entrenamiento de los cuatro folds, el costo de ida
@@ -463,3 +465,41 @@ def resumen_eda(datos: pd.DataFrame, rezagos: int = 168) -> dict[str, pd.DataFra
         "estacionariedad": pd.DataFrame(estacionariedad),
         "horizontes": pd.DataFrame(horizontes).rename_axis("horizonte_horas"),
     }
+
+
+def analisis_variables(datos: pd.DataFrame, fold: int) -> pd.DataFrame:
+    """Relación de cada variable con el objetivo en el entrenamiento de un fold (sección 3.8).
+
+    El objetivo es el rendimiento de las siguientes HORIZONTE_HORAS horas y también su valor
+    absoluto: el primero mide si la variable anticipa la dirección y el segundo si anticipa el
+    tamaño del movimiento. Se reportan correlaciones de Pearson y Spearman, información mutua
+    (estimador de vecinos cercanos) y las pruebas de estacionariedad de cada variable. Las horas
+    cuyo objetivo caería en validación se descartan. Los objetivos de horas vecinas se traslapan,
+    así que estas cifras sirven para comparar variables entre sí, no para hacer inferencia.
+    """
+    variables = calcular_variables(datos)
+    validas = variables.notna().all(axis=1)
+    entrenamiento = particionar(datos[validas], fold)["entrenamiento"]
+    objetivo = rendimiento_futuro(entrenamiento["close"], HORIZONTE_HORAS).dropna()
+    x = variables.loc[objetivo.index]
+    familia = {variable: nombre for nombre, lista in FAMILIAS.items() for variable in lista}
+    filas = []
+    for nombre, y in (("objetivo", objetivo), ("objetivo_abs", objetivo.abs())):
+        filas.append(pd.DataFrame({
+            f"pearson_{nombre}": x.corrwith(y),
+            f"spearman_{nombre}": x.corrwith(y, method="spearman"),
+            f"info_mutua_{nombre}": mutual_info_regression(x.to_numpy(), y.to_numpy(), n_neighbors=3, random_state=SEMILLA),
+        }, index=VARIABLES))
+    pruebas = pd.DataFrame([prueba_estacionariedad(x[v]) for v in VARIABLES], index=VARIABLES)
+    tabla = pd.concat(filas + [pruebas], axis=1)
+    tabla.insert(0, "familia", [familia[v] for v in VARIABLES])
+    tabla.insert(1, "observaciones", len(objetivo))
+    return tabla.rename_axis("variable").reset_index()
+
+
+def guardar_analisis_variables(tabla: pd.DataFrame, fold: int, carpeta: Path) -> Path:
+    """Escribe artifacts/feature_analysis_fold_k.csv."""
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / f"feature_analysis_fold_{fold}.csv"
+    tabla.to_csv(ruta, index=False)
+    return ruta

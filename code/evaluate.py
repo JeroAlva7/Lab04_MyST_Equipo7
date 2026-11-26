@@ -15,10 +15,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-RUTA_SP500 = Path(__file__).resolve().parents[1] / "data" / "raw" / "sp500_diario.csv"
+RAIZ = Path(__file__).resolve().parents[1]
+RUTA_SP500 = RAIZ / "data" / "raw" / "sp500_diario.csv"
+RUTA_ARTEFACTOS = RAIZ / "artifacts"
 HORA_CIERRE_SP500_UTC = 21  # 16:00 en Nueva York: cada cierre se usa a partir de esta hora
 DIAS_POR_ANIO = 365.25  # BTCUSDT opera 24/7: se anualiza con días calendario
 COSTO_POR_LADO = 0.00125  # 0.125 % sobre el monto de cada compra o venta (sección 3.7)
+
+# Columnas de la bitácora (sección 3.8). direccion: +1 largo, -1 corto. tamano: unidades de BTC.
+# razon_salida: "horizonte", "stop", "take_profit" o "cierre".
+COLUMNAS_BITACORA = [
+    "entrada", "salida", "direccion", "razon_salida", "precio_entrada", "precio_salida",
+    "tamano", "pnl_bruto", "costos", "pnl_neto",
+]
 
 
 def cargar_sp500(ruta: Path = RUTA_SP500) -> pd.Series:
@@ -156,3 +165,35 @@ def metricas_capital(capital: pd.Series) -> dict[str, float]:
         "calmar": calmar(capital),
     }
     return {nombre: float(valor) for nombre, valor in metricas.items()}
+
+
+def guardar_bitacora(bitacora: pd.DataFrame, fold: int, carpeta: Path = RUTA_ARTEFACTOS) -> Path:
+    """Escribe artifacts/trade_log_fold_k.csv con las columnas en el orden de COLUMNAS_BITACORA."""
+    faltan = set(COLUMNAS_BITACORA) - set(bitacora.columns)
+    if faltan:
+        raise ValueError(f"A la bitácora le faltan columnas: {sorted(faltan)}")
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / f"trade_log_fold_{fold}.csv"
+    bitacora[COLUMNAS_BITACORA].to_csv(ruta, index=False)
+    return ruta
+
+
+def metricas_operaciones(bitacora: pd.DataFrame, capital: pd.Series) -> dict[str, float]:
+    """Métricas de la sección 3.7 que salen de la bitácora.
+
+    - hit_rate: fracción de operaciones con P&L neto positivo.
+    - duracion_promedio_h: horas promedio entre la entrada y la salida.
+    - rotacion_anual: monto operado por año (compra más venta de cada operación) entre el capital
+      promedio. Una rotación de 10 significa que cada año se compra y vende 10 veces el capital.
+    Sin operaciones (siempre plano), hit rate y duración quedan en NaN y la rotación en 0.
+    """
+    if bitacora.empty:
+        return {"operaciones": 0.0, "hit_rate": np.nan, "duracion_promedio_h": np.nan, "rotacion_anual": 0.0}
+    duracion = (bitacora["salida"] - bitacora["entrada"]) / pd.Timedelta(hours=1)
+    monto = (bitacora["tamano"] * (bitacora["precio_entrada"] + bitacora["precio_salida"])).sum()
+    return {
+        "operaciones": float(len(bitacora)),
+        "hit_rate": float((bitacora["pnl_neto"] > 0).mean()),
+        "duracion_promedio_h": float(duracion.mean()),
+        "rotacion_anual": float(monto / capital.mean() / anios(capital.index)),
+    }

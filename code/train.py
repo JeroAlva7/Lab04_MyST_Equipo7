@@ -9,13 +9,16 @@ Responsabilidades (sección 3.5 de los lineamientos):
 - Registrar en los metadatos de cada corrida las versiones de Stable-Baselines3,
   Gymnasium y PyTorch.
 """
+import json
 import platform
+import time
 from pathlib import Path
 
 import gymnasium
 import numpy as np
 import stable_baselines3
 import torch
+from stable_baselines3 import DQN, PPO
 from stable_baselines3.common.buffers import ReplayBuffer, RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.env_checker import check_env
@@ -26,6 +29,19 @@ import data
 from env import EntornoTrading
 
 RUTA_MODELOS = Path(__file__).resolve().parents[1] / "models"  # en .gitignore: se regeneran con main.py
+
+# Punto de partida de la búsqueda de hiperparámetros: los valores por defecto de SB3 2.9.2, salvo
+# los anotados. gamma es por hora (el descuento de cada decisión es gamma^duración): con 0.995 el
+# horizonte efectivo es de unas 200 horas, ocho decisiones de 24 h.
+ALGORITMOS = {"DQN": DQN, "PPO": PPO}
+HIPERPARAMETROS_BASE = {
+    "DQN": {"learning_rate": 1e-4, "gamma": 0.995, "batch_size": 32, "train_freq": 4,
+            "buffer_size": 100_000,  # por defecto 1,000,000: más que todas las decisiones del entrenamiento
+            "learning_starts": 1_000, "target_update_interval": 2_000,  # por defecto 100 y 10,000
+            "exploration_fraction": 0.1, "exploration_final_eps": 0.05},
+    "PPO": {"learning_rate": 3e-4, "gamma": 0.995, "n_steps": 2_048, "batch_size": 64, "n_epochs": 10,
+            "gae_lambda": 0.95, "ent_coef": 0.0},
+}
 
 # Clave de info donde el entorno reporta cuántas horas duró la decisión (sección 3.3). Se mide en
 # horas de calendario y no en barras: los datos tienen huecos, y el descuento debe reflejar el
@@ -141,3 +157,36 @@ def entorno_de_entrenamiento(parte: data.ParteFold, carpeta: Path, **opciones) -
     check_env(entorno, warn=True)
     carpeta.mkdir(parents=True, exist_ok=True)
     return Monitor(entorno, filename=str(carpeta / "monitor.csv"), info_keywords=("capital",))
+
+
+def entrenar(algoritmo: str, parte: data.ParteFold, semilla: int, pasos: int, carpeta: Path,
+             hiperparametros: dict | None = None, **opciones_entorno):
+    """Entrena DQN o PPO con los buffers semi-Markov y guarda el modelo y sus metadatos.
+
+    Es la receta del S19 (modelo = DQN("MlpPolicy", env); modelo.learn(); modelo.save()), con dos
+    cambios: el buffer descuenta con gamma^duración y los metadatos guardan las versiones, los
+    hiperparámetros, la semilla y el tiempo de la corrida en carpeta/metadatos.json.
+    opciones_entorno pasa al entorno (variables, regla_intrabarra, retraso_barras...).
+    """
+    hp = HIPERPARAMETROS_BASE[algoritmo] | (hiperparametros or {})
+    entorno = entorno_de_entrenamiento(parte, carpeta, **opciones_entorno)
+    if algoritmo == "DQN":
+        semi_markov = {"replay_buffer_class": ReplayBufferSemiMarkov, "replay_buffer_kwargs": {"gamma": hp["gamma"]}}
+        callback = None
+    else:
+        semi_markov = {"rollout_buffer_class": RolloutBufferSemiMarkov}
+        callback = CallbackDuraciones()
+    modelo = ALGORITMOS[algoritmo]("MlpPolicy", entorno, seed=semilla, verbose=0, **hp, **semi_markov)
+    inicio = time.perf_counter()
+    modelo.learn(total_timesteps=pasos, callback=callback)
+    metadatos = {"algoritmo": algoritmo, "semilla": semilla, "pasos": pasos,
+                 "segundos": round(time.perf_counter() - inicio, 1), "hiperparametros": hp,
+                 "opciones_entorno": opciones_entorno, "versiones": versiones()}
+    modelo.save(carpeta / "modelo")
+    (carpeta / "metadatos.json").write_text(json.dumps(metadatos, indent=2, ensure_ascii=False, default=str))
+    return modelo, metadatos
+
+
+def politica_del_modelo(modelo):
+    """Política determinista para evaluar: la mejor acción, sin explorar (deterministic=True, S19)."""
+    return lambda obs: int(modelo.predict(obs, deterministic=True)[0])

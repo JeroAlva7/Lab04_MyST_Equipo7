@@ -15,6 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from data import SEMILLA
 from reward import COSTO_POR_LADO  # una sola fuente para el 0.125 % por lado
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -193,6 +194,20 @@ def metricas_capital(capital: pd.Series) -> dict[str, float]:
         "calmar": calmar(capital),
     }
     return {nombre: float(valor) for nombre, valor in metricas.items()}
+
+
+def correr_politica(entorno, politica, semilla: int = SEMILLA) -> tuple[pd.Series, pd.DataFrame]:
+    """Recorre un episodio completo del entorno con politica(obs) -> acción, como correr() del S18.
+
+    Para evaluar, el entorno se crea con inicio_aleatorio=False, así el episodio es todo el periodo.
+    Devuelve la curva de capital barra por barra y la bitácora de operaciones del episodio.
+    """
+    obs, _ = entorno.reset(seed=semilla)
+    entorno.action_space.seed(semilla)  # para que la política aleatoria también sea reproducible
+    terminado = truncado = False
+    while not (terminado or truncado):
+        obs, _, terminado, truncado, _ = entorno.step(politica(obs))
+    return entorno.curva_capital(), entorno.bitacora_df()
 
 
 def guardar_bitacora(bitacora: pd.DataFrame, fold: int, carpeta: Path = RUTA_ARTEFACTOS) -> Path:

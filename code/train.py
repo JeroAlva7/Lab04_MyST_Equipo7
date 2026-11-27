@@ -229,3 +229,33 @@ def buscar_hiperparametros(fold: int, partes: dict[str, data.ParteFold], curvas_
                               "pasos": pasos, "segundos": meta["segundos"],
                               **evaluar_modelo(modelo, partes["validacion"], curvas_validacion)})
     return pd.DataFrame(filas)
+
+
+def resumen_validacion(resultados: pd.DataFrame) -> pd.DataFrame:
+    """Media y desviación entre semillas de cada configuración en validación, de mejor a peor.
+
+    El criterio es el Sharpe medio entre semillas. Un agente que se queda siempre plano no tiene
+    Sharpe (NaN) y cuenta como 0: no ganó nada por unidad de riesgo.
+    """
+    tabla = resultados.assign(sharpe=resultados["sharpe"].fillna(0.0))
+    claves = ["fold", "algoritmo", "config", "learning_rate", "gamma"]
+    resumen = tabla.groupby(claves)[["sharpe", "retorno_total", "maximo_drawdown", "operaciones"]].agg(["mean", "std"])
+    resumen.columns = [f"{metrica}_{estadistico}" for metrica, estadistico in resumen.columns]
+    return resumen.reset_index().sort_values(["algoritmo", "sharpe_mean"], ascending=[True, False])
+
+
+def mejor_configuracion(resultados: pd.DataFrame) -> dict[str, int]:
+    """Número de la configuración elegida para cada algoritmo: la de mayor Sharpe medio en validación."""
+    resumen = resumen_validacion(resultados)
+    return {algoritmo: int(grupo.iloc[0]["config"]) for algoritmo, grupo in resumen.groupby("algoritmo")}
+
+
+def guardar_resultados_validacion(resultados: pd.DataFrame, fold: int, carpeta: Path = evaluate.RUTA_ARTEFACTOS) -> Path:
+    """Escribe artifacts/validation_results_fold_k.csv: cada corrida (configuración y semilla) con sus
+    métricas de validación y una columna que marca la configuración elegida de cada algoritmo."""
+    elegidas = mejor_configuracion(resultados)
+    tabla = resultados.assign(elegida=[elegidas[a] == c for a, c in zip(resultados["algoritmo"], resultados["config"])])
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / f"validation_results_fold_{fold}.csv"
+    tabla.to_csv(ruta, index=False)
+    return ruta

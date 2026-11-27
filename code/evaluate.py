@@ -272,6 +272,33 @@ def metricas_benchmarks(barras: pd.DataFrame, cierres_sp500: pd.Series) -> dict[
     }
 
 
+# Acciones del entorno (env.POSICION_DE_ACCION): 0 plano, 1 largo, 2 corto. No se importa env aquí
+# porque env ya importa evaluate.
+ACCION_PLANO, ACCION_LARGO = 0, 1
+
+
+def politicas_base(entorno) -> dict:
+    """Las tres líneas base triviales del S19: quien no piensa. El agente tiene que superarlas."""
+    return {
+        "aleatorio": lambda obs: entorno.action_space.sample(),
+        "siempre_largo": lambda obs: ACCION_LARGO,
+        "siempre_plano": lambda obs: ACCION_PLANO,
+    }
+
+
+def metricas_lineas_base(crear_entorno, curvas_benchmark: dict[str, pd.Series]) -> dict[str, dict[str, float]]:
+    """Métricas de la sección 3.7 de cada línea base, con los mismos costos que el agente.
+
+    crear_entorno() devuelve un entorno nuevo del periodo (inicio_aleatorio=False), uno por línea base.
+    """
+    resultados = {}
+    for nombre in ("aleatorio", "siempre_largo", "siempre_plano"):
+        entorno = crear_entorno()
+        curva, bitacora = correr_politica(entorno, politicas_base(entorno)[nombre])
+        resultados[nombre] = metricas(curva, bitacora, curvas_benchmark)
+    return resultados
+
+
 def tabla_metricas(resultados: dict[str, dict[int, dict[str, float]]]) -> pd.DataFrame:
     """Métricas por fold y agregadas, con la forma de artifacts/metrics_summary.csv.
 

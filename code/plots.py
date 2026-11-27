@@ -294,7 +294,7 @@ def _pagina_autocorrelacion(pdf: PdfPages, autocorrelacion: pd.DataFrame, ljung_
             ax.plot(autocorrelacion.index, autocorrelacion[f"{serie}_fold_{fold}"], color=COLORES_FOLD[fold],
                     linestyle=LINEAS_FOLD[fold], linewidth=1.2, label=f"Fold {fold}")
         prueba = ljung_box[(ljung_box["serie"] == serie) & (ljung_box["rezagos"] == 24)]
-        ax.set_title(f"{titulo}\nLjung-Box con 24 rezagos: Q {_rango(prueba['estadistico'], '{:,.0f}')}, "
+        ax.set_title(f"{titulo}\nLjung-Box con 24 rezagos: Q {_rango(prueba['estadistico'], '{:,.0f}')},\n"
                      f"p {_p(prueba['p'].max())} en los cuatro folds", fontsize=10)
         ax.set_xticks([1, 24, 48, 72, 96, 120, 144, 168])
         ax.set_xlim(0, autocorrelacion.index[-1] + 1)

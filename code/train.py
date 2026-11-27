@@ -9,10 +9,23 @@ Responsabilidades (sección 3.5 de los lineamientos):
 - Registrar en los metadatos de cada corrida las versiones de Stable-Baselines3,
   Gymnasium y PyTorch.
 """
+import platform
+from pathlib import Path
+
+import gymnasium
 import numpy as np
+import stable_baselines3
+import torch
 from stable_baselines3.common.buffers import ReplayBuffer, RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
+
+import data
+from env import EntornoTrading
+
+RUTA_MODELOS = Path(__file__).resolve().parents[1] / "models"  # en .gitignore: se regeneran con main.py
 
 # Clave de info donde el entorno reporta cuántas horas duró la decisión (sección 3.3). Se mide en
 # horas de calendario y no en barras: los datos tienen huecos, y el descuento debe reflejar el
@@ -109,3 +122,22 @@ class CallbackDuraciones(BaseCallback):
         if isinstance(buffer, RolloutBufferSemiMarkov):
             buffer.duraciones[buffer.pos] = duraciones_de(self.locals["infos"])
         return True
+
+
+def versiones() -> dict[str, str]:
+    """Versiones que se guardan en los metadatos de cada corrida (sección 2 de los lineamientos)."""
+    return {"python": platform.python_version(), "stable_baselines3": stable_baselines3.__version__,
+            "gymnasium": gymnasium.__version__, "torch": torch.__version__, "numpy": np.__version__}
+
+
+def entorno_de_entrenamiento(parte: data.ParteFold, carpeta: Path, **opciones) -> Monitor:
+    """Entorno de entrenamiento validado con check_env y envuelto en Monitor, como en el S19.
+
+    Monitor guarda en carpeta/monitor.csv la recompensa (r), los pasos (l) y el tiempo (t) de cada
+    episodio: de ahí sale la curva de entrenamiento. Las observaciones ya vienen normalizadas con el
+    entrenamiento del fold (data.Normalizador), así que no hace falta VecNormalize.
+    """
+    entorno = EntornoTrading(parte, inicio_aleatorio=True, **opciones)
+    check_env(entorno, warn=True)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    return Monitor(entorno, filename=str(carpeta / "monitor.csv"), info_keywords=("capital",))

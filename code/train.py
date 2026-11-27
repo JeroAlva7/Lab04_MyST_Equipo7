@@ -16,6 +16,7 @@ from pathlib import Path
 
 import gymnasium
 import numpy as np
+import pandas as pd
 import stable_baselines3
 import torch
 from stable_baselines3 import DQN, PPO
@@ -26,6 +27,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
 
 import data
+import evaluate
 from env import EntornoTrading
 
 RUTA_MODELOS = Path(__file__).resolve().parents[1] / "models"  # en .gitignore: se regeneran con main.py
@@ -190,3 +192,40 @@ def entrenar(algoritmo: str, parte: data.ParteFold, semilla: int, pasos: int, ca
 def politica_del_modelo(modelo):
     """Política determinista para evaluar: la mejor acción, sin explorar (deterministic=True, S19)."""
     return lambda obs: int(modelo.predict(obs, deterministic=True)[0])
+
+
+# Búsqueda en validación (sección 3.5): cada configuración se entrena con varias semillas, porque una
+# semilla es una muestra de tamaño uno (S19). 300 mil pasos tardan cerca de 1 min con DQN y 1.5 con PPO.
+PASOS = 300_000
+SEMILLAS = (data.SEMILLA, 7, 123)
+REJILLA = {
+    algoritmo: [{"learning_rate": lr, "gamma": gamma} for lr in tasas for gamma in (0.99, 0.995, 0.999)]
+    for algoritmo, tasas in (("DQN", (1e-4, 5e-4)), ("PPO", (1e-4, 3e-4)))
+}
+
+
+def evaluar_modelo(modelo, parte: data.ParteFold, curvas_benchmark: dict[str, pd.Series], **opciones_entorno) -> dict:
+    """Métricas de la sección 3.7 del modelo en todo un periodo, con su política determinista."""
+    entorno = EntornoTrading(parte, inicio_aleatorio=False, **opciones_entorno)
+    curva, bitacora = evaluate.correr_politica(entorno, politica_del_modelo(modelo))
+    return evaluate.metricas(curva, bitacora, curvas_benchmark)
+
+
+def buscar_hiperparametros(fold: int, partes: dict[str, data.ParteFold], curvas_validacion: dict[str, pd.Series],
+                           algoritmos=("DQN", "PPO"), semillas=SEMILLAS, pasos: int = PASOS,
+                           carpeta: Path = RUTA_MODELOS) -> pd.DataFrame:
+    """Entrena cada configuración de REJILLA con cada semilla y la evalúa en validación.
+
+    Cada modelo se guarda en models/fold_k/<algoritmo>/config_n/semilla_s, así la evaluación en
+    prueba usa los modelos de la configuración elegida sin volver a entrenar.
+    """
+    filas = []
+    for algoritmo in algoritmos:
+        for numero, hp in enumerate(REJILLA[algoritmo]):
+            for semilla in semillas:
+                destino = carpeta / f"fold_{fold}" / algoritmo / f"config_{numero}" / f"semilla_{semilla}"
+                modelo, meta = entrenar(algoritmo, partes["entrenamiento"], semilla, pasos, destino, hp)
+                filas.append({"fold": fold, "algoritmo": algoritmo, "config": numero, **hp, "semilla": semilla,
+                              "pasos": pasos, "segundos": meta["segundos"],
+                              **evaluar_modelo(modelo, partes["validacion"], curvas_validacion)})
+    return pd.DataFrame(filas)

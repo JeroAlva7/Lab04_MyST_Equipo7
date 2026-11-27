@@ -15,6 +15,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from reward import COSTO_POR_LADO  # una sola fuente para el 0.125 % por lado
+
 RAIZ = Path(__file__).resolve().parents[1]
 RUTA_SP500 = RAIZ / "data" / "raw" / "sp500_diario.csv"
 RUTA_ARTEFACTOS = RAIZ / "artifacts"
@@ -23,7 +25,6 @@ RUTA_ARTEFACTOS = RAIZ / "artifacts"
 # antes de que exista (en verano se usa con una hora de retraso).
 HORA_CIERRE_SP500_UTC = 21
 DIAS_POR_ANIO = 365.25  # BTCUSDT opera 24/7: se anualiza con días calendario
-COSTO_POR_LADO = 0.00125  # 0.125 % sobre el monto de cada compra o venta (sección 3.7)
 
 # Columnas de la bitácora (sección 3.8). direccion: +1 largo, -1 corto. tamano: unidades de BTC.
 # razon_salida: "horizonte", "stop", "take_profit" o "cierre".

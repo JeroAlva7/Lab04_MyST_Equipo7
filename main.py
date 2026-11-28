@@ -6,10 +6,15 @@ Uso:
 Etapas (se agregan conforme se implementan los módulos de code/):
     1. Datos: carga y limpieza, variables causales, folds y normalización (code/data.py), y
        análisis exploratorio: artifacts/btcusdt_eda.pdf y artifacts/feature_analysis_fold_k.csv.
-    2. Entorno: validación con check_env y líneas base (code/env.py, code/reward.py).
-    3. Entrenamiento: algoritmos de SB3 por fold y semilla, búsqueda en validación (code/train.py).
-    4. Evaluación: prueba una sola vez, benchmarks, métricas y bitácoras (code/evaluate.py).
-    5. Figuras y artefactos en artifacts/ (code/plots.py).
+    2. Entrenamiento y búsqueda de hiperparámetros en validación, por fold y semilla, con DQN y
+       PPO sobre el entorno validado con check_env (code/train.py, code/env.py, code/reward.py):
+       artifacts/validation_results_fold_k.csv.
+    3. Evaluación: prueba una sola vez, líneas base, benchmarks, métricas y bitácoras (code/evaluate.py).
+    4. Figuras y artefactos en artifacts/ (code/plots.py).
+
+Los modelos quedan en models/ (fuera del repositorio) y se reutilizan si ya existen con la misma
+configuración, así volver a correr main.py no repite el entrenamiento. Desde un clon limpio se
+entrena todo.
 """
 import sys
 import time
@@ -25,6 +30,7 @@ sys.path.insert(0, str(RAIZ / "code"))
 import data  # noqa: E402  (los módulos de code/ se importan después de agregar la carpeta al path)
 import evaluate  # noqa: E402
 import plots  # noqa: E402
+import train  # noqa: E402
 
 
 def etapa_eda(datos: pd.DataFrame, reporte: dict) -> None:
@@ -39,13 +45,34 @@ def etapa_eda(datos: pd.DataFrame, reporte: dict) -> None:
     print(f"   {ruta.relative_to(RAIZ)}")
 
 
+def etapa_validacion(datos: pd.DataFrame) -> dict[int, dict[str, int]]:
+    """Búsqueda de hiperparámetros en validación de cada fold (sección 3.5).
+
+    Entrena cada configuración de train.REJILLA con cada semilla de train.SEMILLAS, la evalúa en
+    validación contra los dos benchmarks y guarda artifacts/validation_results_fold_k.csv.
+    Devuelve la configuración elegida de cada algoritmo por fold (mayor Sharpe medio).
+    """
+    cierres_sp500 = evaluate.cargar_sp500()
+    elegidas = {}
+    for fold in data.FOLDS:
+        partes, _ = data.preparar_fold(datos, fold)
+        curvas = evaluate.benchmarks(partes["validacion"].barras, cierres_sp500)
+        resultados = train.buscar_hiperparametros(fold, partes, curvas)
+        ruta = train.guardar_resultados_validacion(resultados, fold)
+        elegidas[fold] = train.mejor_configuracion(resultados)
+        print(f"   {ruta.relative_to(RAIZ)}: configuraciones elegidas {elegidas[fold]}", flush=True)
+    return elegidas
+
+
 def main() -> None:
     """Ejecuta el pipeline completo."""
     inicio = time.perf_counter()
-    print("1. Datos y análisis exploratorio")
+    print("1. Datos y análisis exploratorio", flush=True)
     datos, reporte = data.cargar_datos()
     etapa_eda(datos, reporte)
-    print("Las etapas de entorno, entrenamiento y evaluación todavía no están conectadas.")
+    print("2. Entrenamiento y búsqueda de hiperparámetros en validación", flush=True)
+    etapa_validacion(datos)
+    print("Las etapas de evaluación en prueba y figuras todavía no están conectadas.")
     print(f"Tiempo total: {time.perf_counter() - inicio:.0f} s")
 
 

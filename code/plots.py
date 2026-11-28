@@ -517,3 +517,95 @@ def pdf_eda(datos: pd.DataFrame, reporte: dict, resumen: dict[str, pd.DataFrame]
         informacion["Title"] = "BTCUSDT horario: análisis exploratorio del entrenamiento"
         informacion["Author"] = "Equipo 7, Microestructura y Sistemas de Trading, ITESO"
     return ruta
+
+
+# ----- Entrenamiento y prueba (secciones 3.5 y 3.8) ---------------------------------------------
+
+COLORES_SEMILLA = {42: "#0072B2", 7: "#E69F00", 123: "#009E73"}
+LINEAS_SEMILLA = {42: "-", 7: "--", 123: "-."}
+COLORES_ESTRATEGIA = {"DQN": "#0072B2", "PPO": "#E69F00", "btc": "#009E73", "sp500": "#D55E00"}
+NOMBRES_BENCHMARK = {"btc": "Comprar y mantener BTC", "sp500": "Indexar al S&P 500"}
+ETIQUETAS_CORTAS = {"btc": "BTC", "sp500": "S&P 500"}
+VENTANA_EPISODIOS = 100  # media móvil de las curvas de entrenamiento
+
+
+def curvas_entrenamiento(fold: int, monitores: dict[str, dict[int, pd.DataFrame]], descripciones: dict[str, str],
+                         fin_exploracion: float, periodo: str, ruta: Path) -> Path:
+    """Escribe artifacts/training_curves_fold_k.png con la recompensa por episodio al entrenar.
+
+    monitores[algoritmo][semilla] es train.leer_monitor() de la configuración elegida. Un panel por
+    algoritmo y una línea por semilla (media móvil de VENTANA_EPISODIOS episodios). Anotaciones: el
+    0 de quedarse plano, el fin de la exploración de DQN y la media del último 20 % de los episodios.
+    """
+    fig = Figure(figsize=(12, 5))
+    ejes = fig.subplots(1, len(monitores), sharey=True)
+    for ax, (algoritmo, por_semilla) in zip(np.atleast_1d(ejes), monitores.items()):
+        finales = []
+        for semilla, monitor in por_semilla.items():
+            media = monitor["r"].rolling(VENTANA_EPISODIOS, min_periods=10).mean()
+            ax.plot(monitor["pasos"], media, color=COLORES_SEMILLA.get(semilla), linestyle=LINEAS_SEMILLA.get(semilla, "-"),
+                    linewidth=1.5, label=f"Semilla {semilla}")
+            finales.append(f"semilla {semilla}: {monitor['r'].iloc[-max(len(monitor) // 5, 1):].mean():+.3f}")
+        ax.axhline(0, color=GRIS, linestyle=":", linewidth=1)
+        ax.text(0.99, 0.02, "0 = el capital no cambia en la ventana (p. ej., siempre plano)", transform=ax.transAxes,
+                ha="right", va="bottom", fontsize=8, color=GRIS)
+        if algoritmo == "DQN":
+            ax.axvline(fin_exploracion, color=GRIS, linestyle="--", linewidth=1)
+            ax.text(fin_exploracion, 0.98, " fin de la exploración\n (ε baja a 0.05)", transform=ax.get_xaxis_transform(),
+                    va="top", fontsize=8, color=GRIS)
+        ax.text(0.01, 0.98, "Media del último 20 % de episodios:\n" + "\n".join(finales), transform=ax.transAxes,
+                va="top", fontsize=8, bbox={"facecolor": "white", "edgecolor": "#D0D0D0"})
+        ax.set_title(f"{algoritmo} ({descripciones[algoritmo]})", fontsize=10)
+        ax.set_xlabel("Pasos de entrenamiento (decisiones)")
+        ax.legend(loc="lower left", bbox_to_anchor=(0, 0.06), fontsize=8)
+    np.atleast_1d(ejes)[0].set_ylabel(f"Recompensa del episodio de 30 días\n(media móvil de {VENTANA_EPISODIOS} episodios)")
+    fig.suptitle(f"Fold {fold}: curvas de entrenamiento de la configuración elegida en validación ({periodo})",
+                 x=0.01, ha="left", fontsize=12, fontweight="bold")
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(ruta, dpi=150)
+    return ruta
+
+
+def curvas_capital_prueba(fold: int, agentes: dict[str, dict[int, pd.Series]], benchmarks: dict[str, pd.Series],
+                          capital_inicial: float, ruta: Path) -> Path:
+    """Escribe artifacts/equity_curves_test_fold_k.png: el capital en prueba contra los dos benchmarks.
+
+    Todas las curvas empiezan en 1. Cada algoritmo muestra la media entre semillas y una banda entre
+    la peor y la mejor semilla; la línea punteada en 1 es la línea base de quedarse siempre plano.
+    """
+    fig = Figure(figsize=(12, 5.5))
+    ax = fig.subplots()
+    finales = []
+    for algoritmo, por_semilla in agentes.items():
+        curvas = pd.concat(por_semilla, axis=1) / capital_inicial
+        media = curvas.mean(axis=1)
+        ax.fill_between(curvas.index, curvas.min(axis=1), curvas.max(axis=1), color=COLORES_ESTRATEGIA[algoritmo],
+                        alpha=0.15, linewidth=0)
+        ax.plot(media.index, media, color=COLORES_ESTRATEGIA[algoritmo], linewidth=2,
+                label=f"{algoritmo}: media de {curvas.shape[1]} semillas (banda: peor y mejor)")
+        finales.append((media.index[-1], media.iloc[-1], algoritmo, COLORES_ESTRATEGIA[algoritmo]))
+    for nombre, curva in benchmarks.items():
+        ax.plot(curva.index, curva, color=COLORES_ESTRATEGIA[nombre], linewidth=1.5, linestyle="--",
+                label=NOMBRES_BENCHMARK[nombre])
+        finales.append((curva.index[-1], curva.iloc[-1], ETIQUETAS_CORTAS[nombre], COLORES_ESTRATEGIA[nombre]))
+    ax.axhline(1, color=GRIS, linestyle=":", linewidth=1, label="Siempre plano")
+    inicio, fin = benchmarks[next(iter(benchmarks))].index[[0, -1]]
+    ax.set_xlim(inicio, fin + (fin - inicio) * 0.1)  # espacio a la derecha para las etiquetas finales
+    # Etiqueta con el retorno total al final de cada curva, separadas para que no se encimen.
+    bajo, alto = ax.get_ylim()
+    separacion, anterior = 0.045 * (alto - bajo), -np.inf
+    for x, y, nombre, color in sorted(finales, key=lambda final: final[1]):
+        anterior = max(y, anterior + separacion)
+        ax.annotate(f"{nombre} {y - 1:+.0%}", (x, y), xytext=(x + (fin - inicio) * 0.01, anterior), textcoords="data",
+                    va="center", fontsize=8, color="black", arrowprops={"arrowstyle": "-", "color": color, "linewidth": 0.8},
+                    bbox={"facecolor": "white", "edgecolor": color, "boxstyle": "round,pad=0.2"})
+    ax.set_title(f"Fold {fold}: capital en prueba del {inicio:%Y-%m-%d} al {fin:%Y-%m-%d}, con 0.125 % de costo por lado",
+                 loc="left", fontsize=12, fontweight="bold")
+    ax.set_xlabel("Fecha (UTC)")
+    ax.set_ylabel("Capital (inicio = 1)")
+    ax.legend(loc="upper left", fontsize=8)
+    fig.tight_layout()
+    ruta.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(ruta, dpi=150)
+    return ruta

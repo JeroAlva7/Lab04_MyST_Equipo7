@@ -9,8 +9,10 @@ Etapas (se agregan conforme se implementan los módulos de code/):
     2. Entrenamiento y búsqueda de hiperparámetros en validación, por fold y semilla, con DQN y
        PPO sobre el entorno validado con check_env (code/train.py, code/env.py, code/reward.py):
        artifacts/validation_results_fold_k.csv.
-    3. Evaluación: prueba una sola vez, líneas base, benchmarks, métricas y bitácoras (code/evaluate.py).
-    4. Figuras y artefactos en artifacts/ (code/plots.py).
+    3. Evaluación en prueba, una sola vez por fold, de la configuración elegida de cada algoritmo con
+       sus tres semillas, contra las líneas base y los dos benchmarks (code/evaluate.py, code/plots.py):
+       artifacts/trade_log_fold_k.csv, training_curves_fold_k.png, equity_curves_test_fold_k.png y
+       metrics_summary.csv.
 
 Los modelos quedan en models/ (fuera del repositorio) y se reutilizan si ya existen con la misma
 configuración, así volver a correr main.py no repite el entrenamiento. Desde un clon limpio se
@@ -34,6 +36,7 @@ import data  # noqa: E402  (los módulos de code/ se importan después de agrega
 import evaluate  # noqa: E402
 import plots  # noqa: E402
 import train  # noqa: E402
+from env import CAPITAL_INICIAL, EntornoTrading  # noqa: E402
 
 
 def etapa_eda(datos: pd.DataFrame, reporte: dict) -> None:
@@ -70,6 +73,51 @@ def etapa_validacion(datos: pd.DataFrame) -> dict[int, dict[str, int]]:
     return elegidas
 
 
+def etapa_prueba(datos: pd.DataFrame, elegidas: dict[int, dict[str, int]]) -> pd.DataFrame:
+    """Evaluación en prueba de la configuración elegida en validación, una sola vez por fold (3.6 a 3.8).
+
+    Cada algoritmo se evalúa con sus tres semillas y en la tabla entra el promedio entre semillas, más
+    la desviación del Sharpe entre semillas. La bitácora de cada fold es la del algoritmo principal con
+    la semilla del proyecto. Las líneas base y los benchmarks pagan los mismos costos.
+    """
+    cierres_sp500 = evaluate.cargar_sp500()
+    resultados: dict[str, dict[int, dict[str, float]]] = {}
+    for fold in data.FOLDS:
+        partes, _ = data.preparar_fold(datos, fold)
+        prueba = partes["prueba"]
+        curvas_benchmark = evaluate.benchmarks(prueba.barras, cierres_sp500)
+        curvas_agentes, monitores = {}, {}
+        for algoritmo, por_semilla in train.modelos_elegidos(fold, partes, elegidas[fold]).items():
+            metricas_semillas, curvas_agentes[algoritmo], monitores[algoritmo] = {}, {}, {}
+            for semilla, (modelo, carpeta) in por_semilla.items():
+                entorno = EntornoTrading(prueba, inicio_aleatorio=False)
+                curva, bitacora = evaluate.correr_politica(entorno, train.politica_del_modelo(modelo))
+                metricas_semillas[semilla] = evaluate.metricas(curva, bitacora, curvas_benchmark)
+                curvas_agentes[algoritmo][semilla], monitores[algoritmo][semilla] = curva, train.leer_monitor(carpeta)
+                if algoritmo == train.ALGORITMO_PRINCIPAL and semilla == data.SEMILLA:
+                    print(f"   {evaluate.guardar_bitacora(bitacora, fold).relative_to(RAIZ)}", flush=True)
+            resultados.setdefault(algoritmo, {})[fold] = evaluate.metricas_entre_semillas(metricas_semillas)
+        lineas_base = evaluate.metricas_lineas_base(lambda: EntornoTrading(prueba, inicio_aleatorio=False), curvas_benchmark)
+        for nombre, metricas in lineas_base.items():
+            resultados.setdefault(nombre, {})[fold] = metricas
+        for nombre, metricas in evaluate.metricas_benchmarks(prueba.barras, cierres_sp500).items():
+            resultados.setdefault(f"benchmark_{nombre}", {})[fold] = metricas
+
+        descripciones = {a: f"lr = {train.REJILLA[a][c]['learning_rate']:g}, gamma = {train.REJILLA[a][c]['gamma']} por hora"
+                         for a, c in elegidas[fold].items()}
+        entrenamiento = partes["entrenamiento"].barras.index
+        periodo = f"entrenamiento del {entrenamiento[0]:%Y-%m-%d} al {entrenamiento[-1]:%Y-%m-%d}"
+        fin_exploracion = train.HIPERPARAMETROS_BASE["DQN"]["exploration_fraction"] * train.PASOS
+        for ruta in (plots.curvas_entrenamiento(fold, monitores, descripciones, fin_exploracion, periodo,
+                                                evaluate.RUTA_ARTEFACTOS / f"training_curves_fold_{fold}.png"),
+                     plots.curvas_capital_prueba(fold, curvas_agentes, curvas_benchmark, CAPITAL_INICIAL,
+                                                 evaluate.RUTA_ARTEFACTOS / f"equity_curves_test_fold_{fold}.png")):
+            print(f"   {ruta.relative_to(RAIZ)}", flush=True)
+    tabla = evaluate.tabla_metricas(resultados)
+    print(f"   {evaluate.guardar_tabla_metricas(tabla).relative_to(RAIZ)}", flush=True)
+    return tabla
+
+
 def main() -> None:
     """Ejecuta el pipeline completo."""
     inicio = time.perf_counter()
@@ -77,8 +125,9 @@ def main() -> None:
     datos, reporte = data.cargar_datos()
     etapa_eda(datos, reporte)
     print("2. Entrenamiento y búsqueda de hiperparámetros en validación", flush=True)
-    etapa_validacion(datos)
-    print("Las etapas de evaluación en prueba y figuras todavía no están conectadas.")
+    elegidas = etapa_validacion(datos)
+    print("3. Evaluación en prueba", flush=True)
+    etapa_prueba(datos, elegidas)
     print(f"Tiempo total: {time.perf_counter() - inicio:.0f} s")
 
 

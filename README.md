@@ -94,12 +94,15 @@ pytest
 
 1. Datos y análisis exploratorio (menos de un minuto): `btcusdt_eda.pdf` y `feature_analysis_fold_k.csv`.
 2. Búsqueda de hiperparámetros en validación: entrena 96 modelos de 100 mil pasos (4 folds, DQN y PPO,
-   4 configuraciones, 3 semillas), un fold por proceso, y escribe `validation_results_fold_k.csv`. Tarda un
-   par de horas en una laptop con CPU.
+   4 configuraciones, 3 semillas), un fold por proceso, y escribe `validation_results_fold_k.csv`. Tardó 43
+   minutos en una laptop con Windows y 8 hilos.
+3. Evaluación en prueba de la configuración elegida de cada algoritmo, con sus 3 semillas, contra las líneas
+   base y los dos benchmarks: `trade_log_fold_k.csv`, `training_curves_fold_k.png`,
+   `equity_curves_test_fold_k.png` y `metrics_summary.csv`.
 
 Los modelos se guardan en `models/`, que no se sube al repositorio. Si `main.py` se vuelve a correr, los
-modelos con la misma configuración se cargan en vez de entrenarse otra vez; para reentrenar todo se borra
-`models/`. Desde un clon limpio se entrena todo.
+modelos con la misma configuración se cargan en vez de entrenarse otra vez y todo el pipeline tarda unos
+minutos; para reentrenar todo se borra `models/`. Desde un clon limpio se entrena todo.
 
 ## Datos
 

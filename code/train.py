@@ -169,8 +169,21 @@ def entrenar(algoritmo: str, parte: data.ParteFold, semilla: int, pasos: int, ca
     cambios: el buffer descuenta con gamma^duración y los metadatos guardan las versiones, los
     hiperparámetros, la semilla y el tiempo de la corrida en carpeta/metadatos.json.
     opciones_entorno pasa al entorno (variables, regla_intrabarra, retraso_barras...).
+
+    Si carpeta ya tiene un modelo con la misma configuración (algoritmo, semilla, pasos,
+    hiperparámetros y opciones del entorno), lo carga en vez de entrenarlo otra vez: así main.py se
+    puede volver a correr sin repetir horas de entrenamiento. Para reentrenar todo, se borra models/.
+    Los metadatos que devuelve traen "reutilizado" para distinguir los dos casos.
     """
     hp = HIPERPARAMETROS_BASE[algoritmo] | (hiperparametros or {})
+    pedido = {"algoritmo": algoritmo, "semilla": semilla, "pasos": pasos, "hiperparametros": hp,
+              "opciones_entorno": opciones_entorno}
+    ruta_metadatos = carpeta / "metadatos.json"
+    if ruta_metadatos.exists() and (carpeta / "modelo.zip").exists():
+        guardados = json.loads(ruta_metadatos.read_text())
+        como_json = json.loads(json.dumps(pedido, default=str))  # tuplas como listas, igual que al guardar
+        if all(guardados.get(clave) == valor for clave, valor in como_json.items()):
+            return ALGORITMOS[algoritmo].load(carpeta / "modelo"), guardados | {"reutilizado": True}
     entorno = entorno_de_entrenamiento(parte, carpeta, **opciones_entorno)
     if algoritmo == "DQN":
         semi_markov = {"replay_buffer_class": ReplayBufferSemiMarkov, "replay_buffer_kwargs": {"gamma": hp["gamma"]}}
@@ -181,12 +194,10 @@ def entrenar(algoritmo: str, parte: data.ParteFold, semilla: int, pasos: int, ca
     modelo = ALGORITMOS[algoritmo]("MlpPolicy", entorno, seed=semilla, verbose=0, **hp, **semi_markov)
     inicio = time.perf_counter()
     modelo.learn(total_timesteps=pasos, callback=callback)
-    metadatos = {"algoritmo": algoritmo, "semilla": semilla, "pasos": pasos,
-                 "segundos": round(time.perf_counter() - inicio, 1), "hiperparametros": hp,
-                 "opciones_entorno": opciones_entorno, "versiones": versiones()}
+    metadatos = pedido | {"segundos": round(time.perf_counter() - inicio, 1), "versiones": versiones()}
     modelo.save(carpeta / "modelo")
-    (carpeta / "metadatos.json").write_text(json.dumps(metadatos, indent=2, ensure_ascii=False, default=str))
-    return modelo, metadatos
+    ruta_metadatos.write_text(json.dumps(metadatos, indent=2, ensure_ascii=False, default=str))
+    return modelo, metadatos | {"reutilizado": False}
 
 
 def politica_del_modelo(modelo):
@@ -217,7 +228,8 @@ def buscar_hiperparametros(fold: int, partes: dict[str, data.ParteFold], curvas_
     """Entrena cada configuración de REJILLA con cada semilla y la evalúa en validación.
 
     Cada modelo se guarda en models/fold_k/<algoritmo>/config_n/semilla_s, así la evaluación en
-    prueba usa los modelos de la configuración elegida sin volver a entrenar.
+    prueba usa los modelos de la configuración elegida sin volver a entrenar. Cada fila trae las
+    versiones de la corrida: models/ no se sube al repositorio, pero validation_results sí.
     """
     filas = []
     for algoritmo in algoritmos:
@@ -227,7 +239,10 @@ def buscar_hiperparametros(fold: int, partes: dict[str, data.ParteFold], curvas_
                 modelo, meta = entrenar(algoritmo, partes["entrenamiento"], semilla, pasos, destino, hp)
                 filas.append({"fold": fold, "algoritmo": algoritmo, "config": numero, **hp, "semilla": semilla,
                               "pasos": pasos, "segundos": meta["segundos"],
+                              **{f"version_{paquete}": version for paquete, version in meta["versiones"].items()},
                               **evaluar_modelo(modelo, partes["validacion"], curvas_validacion)})
+                estado = "reutilizado" if meta["reutilizado"] else f"{meta['segundos']:.0f} s"
+                print(f"   fold {fold}, {algoritmo}, configuración {numero}, semilla {semilla}: {estado}", flush=True)
     return pd.DataFrame(filas)
 
 

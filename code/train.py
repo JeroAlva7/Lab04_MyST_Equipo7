@@ -32,6 +32,10 @@ from env import EntornoTrading
 
 RUTA_MODELOS = Path(__file__).resolve().parents[1] / "models"  # en .gitignore: se regeneran con main.py
 
+# Las redes son pequeñas (dos capas de 64): con un solo hilo PyTorch entrena más rápido que repartiendo
+# cada operación entre núcleos, y deja los demás núcleos libres para entrenar los folds en paralelo.
+torch.set_num_threads(1)
+
 # Punto de partida de la búsqueda de hiperparámetros: los valores por defecto de SB3 2.9.2, salvo
 # los anotados. gamma es por hora (el descuento de cada decisión es gamma^duración): con 0.995 el
 # horizonte efectivo es de unas 200 horas, ocho decisiones de 24 h.
@@ -206,11 +210,14 @@ def politica_del_modelo(modelo):
 
 
 # Búsqueda en validación (sección 3.5): cada configuración se entrena con varias semillas, porque una
-# semilla es una muestra de tamaño uno (S19). 300 mil pasos tardan cerca de 1 min con DQN y 1.5 con PPO.
-PASOS = 300_000
+# semilla es una muestra de tamaño uno (S19). Presupuesto de cómputo: 300 mil pasos tardaron 344 s por
+# corrida en una laptop con Windows, así que la rejilla de 144 corridas habría tardado unas 14 horas. Con
+# 100 mil pasos, gamma por hora de 0.995 o 0.999 (0.99 descuenta 21 % cada decisión de 24 horas) y un
+# proceso por fold, las 96 corridas caben en un par de horas.
+PASOS = 100_000
 SEMILLAS = (data.SEMILLA, 7, 123)
 REJILLA = {
-    algoritmo: [{"learning_rate": lr, "gamma": gamma} for lr in tasas for gamma in (0.99, 0.995, 0.999)]
+    algoritmo: [{"learning_rate": lr, "gamma": gamma} for lr in tasas for gamma in (0.995, 0.999)]
     for algoritmo, tasas in (("DQN", (1e-4, 5e-4)), ("PPO", (1e-4, 3e-4)))
 }
 
@@ -244,6 +251,13 @@ def buscar_hiperparametros(fold: int, partes: dict[str, data.ParteFold], curvas_
                 estado = "reutilizado" if meta["reutilizado"] else f"{meta['segundos']:.0f} s"
                 print(f"   fold {fold}, {algoritmo}, configuración {numero}, semilla {semilla}: {estado}", flush=True)
     return pd.DataFrame(filas)
+
+
+def busqueda_en_fold(datos: pd.DataFrame, fold: int, cierres_sp500: pd.Series) -> pd.DataFrame:
+    """Búsqueda de hiperparámetros de un fold completo; main.py corre un fold por proceso."""
+    partes, _ = data.preparar_fold(datos, fold)
+    curvas = evaluate.benchmarks(partes["validacion"].barras, cierres_sp500)
+    return buscar_hiperparametros(fold, partes, curvas)
 
 
 def resumen_validacion(resultados: pd.DataFrame) -> pd.DataFrame:

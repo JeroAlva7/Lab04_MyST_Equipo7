@@ -40,6 +40,7 @@ torch.set_num_threads(1)
 # los anotados. gamma es por hora (el descuento de cada decisión es gamma^duración): con 0.995 el
 # horizonte efectivo es de unas 200 horas, ocho decisiones de 24 h.
 ALGORITMOS = {"DQN": DQN, "PPO": PPO}
+ALGORITMO_PRINCIPAL = "DQN"  # PPO es el segundo algoritmo, para comparar (pregunta 7)
 HIPERPARAMETROS_BASE = {
     "DQN": {"learning_rate": 1e-4, "gamma": 0.995, "batch_size": 32, "train_freq": 4,
             "buffer_size": 100_000,  # por defecto 1,000,000: más que todas las decisiones del entrenamiento
@@ -213,7 +214,7 @@ def politica_del_modelo(modelo):
 # semilla es una muestra de tamaño uno (S19). Presupuesto de cómputo: 300 mil pasos tardaron 344 s por
 # corrida en una laptop con Windows, así que la rejilla de 144 corridas habría tardado unas 14 horas. Con
 # 100 mil pasos, gamma por hora de 0.995 o 0.999 (0.99 descuenta 21 % cada decisión de 24 horas) y un
-# proceso por fold, las 96 corridas caben en un par de horas.
+# proceso por fold, las 96 corridas tardaron 43 minutos.
 PASOS = 100_000
 SEMILLAS = (data.SEMILLA, 7, 123)
 REJILLA = {
@@ -258,6 +259,34 @@ def busqueda_en_fold(datos: pd.DataFrame, fold: int, cierres_sp500: pd.Series) -
     partes, _ = data.preparar_fold(datos, fold)
     curvas = evaluate.benchmarks(partes["validacion"].barras, cierres_sp500)
     return buscar_hiperparametros(fold, partes, curvas)
+
+
+def modelos_elegidos(fold: int, partes: dict[str, data.ParteFold], elegidas: dict[str, int], semillas=SEMILLAS,
+                     pasos: int = PASOS, carpeta: Path = RUTA_MODELOS) -> dict[str, dict[int, tuple]]:
+    """Modelos de la configuración elegida en validación, por algoritmo y semilla.
+
+    Normalmente se cargan de models/, porque la búsqueda ya los entrenó; si faltan, se entrenan aquí
+    con la misma receta. Devuelve {algoritmo: {semilla: (modelo, carpeta)}}; la carpeta tiene el
+    monitor.csv con la curva de entrenamiento.
+    """
+    modelos = {}
+    for algoritmo, numero in elegidas.items():
+        modelos[algoritmo] = {}
+        for semilla in semillas:
+            destino = carpeta / f"fold_{fold}" / algoritmo / f"config_{numero}" / f"semilla_{semilla}"
+            modelo, _ = entrenar(algoritmo, partes["entrenamiento"], semilla, pasos, destino, REJILLA[algoritmo][numero])
+            modelos[algoritmo][semilla] = (modelo, destino)
+    return modelos
+
+
+def leer_monitor(carpeta: Path) -> pd.DataFrame:
+    """Episodios de entrenamiento que guardó Monitor, con los pasos acumulados.
+
+    Columnas: r (recompensa del episodio: log del capital final entre el inicial en la ventana de 30
+    días), l (decisiones del episodio), t (segundos desde el inicio), capital y pasos.
+    """
+    monitor = pd.read_csv(carpeta / "monitor.csv", skiprows=1)  # la primera línea es un comentario JSON
+    return monitor.assign(pasos=monitor["l"].cumsum())
 
 
 def resumen_validacion(resultados: pd.DataFrame) -> pd.DataFrame:

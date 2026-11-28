@@ -93,8 +93,9 @@ pytest
 `main.py` corre por etapas y escribe los artefactos en `artifacts/`:
 
 1. Datos y análisis exploratorio (menos de un minuto): `btcusdt_eda.pdf` y `feature_analysis_fold_k.csv`.
-2. Búsqueda de hiperparámetros en validación: entrena 144 modelos (4 folds, DQN y PPO, 6 configuraciones,
-   3 semillas) y escribe `validation_results_fold_k.csv`. Tarda unas 3 horas en una laptop con CPU.
+2. Búsqueda de hiperparámetros en validación: entrena 96 modelos de 100 mil pasos (4 folds, DQN y PPO,
+   4 configuraciones, 3 semillas), un fold por proceso, y escribe `validation_results_fold_k.csv`. Tarda un
+   par de horas en una laptop con CPU.
 
 Los modelos se guardan en `models/`, que no se sube al repositorio. Si `main.py` se vuelve a correr, los
 modelos con la misma configuración se cargan en vez de entrenarse otra vez; para reentrenar todo se borra

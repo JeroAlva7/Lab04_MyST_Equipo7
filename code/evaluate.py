@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from data import SEMILLA
+from env import ACCION_LARGO, ACCION_PLANO, COLUMNAS_BITACORA
 from reward import COSTO_POR_LADO  # una sola fuente para el 0.125 % por lado
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -26,13 +27,6 @@ RUTA_ARTEFACTOS = RAIZ / "artifacts"
 # antes de que exista (en verano se usa con una hora de retraso).
 HORA_CIERRE_SP500_UTC = 21
 DIAS_POR_ANIO = 365.25  # BTCUSDT opera 24/7: se anualiza con días calendario
-
-# Columnas de la bitácora (sección 3.8). direccion: +1 largo, -1 corto. tamano: unidades de BTC.
-# razon_salida: "horizonte", "stop", "take_profit" o "cierre".
-COLUMNAS_BITACORA = [
-    "entrada", "salida", "direccion", "razon_salida", "precio_entrada", "precio_salida",
-    "tamano", "pnl_bruto", "costos", "pnl_neto",
-]
 
 
 def cargar_sp500(ruta: Path = RUTA_SP500) -> pd.Series:
@@ -270,11 +264,6 @@ def metricas_benchmarks(barras: pd.DataFrame, cierres_sp500: pd.Series) -> dict[
         nombre: metricas(curvas[nombre], bitacora_comprar_y_mantener(precios[nombre]), curvas)
         for nombre in precios
     }
-
-
-# Acciones del entorno (env.POSICION_DE_ACCION): 0 plano, 1 largo, 2 corto. No se importa env aquí
-# porque env ya importa evaluate.
-ACCION_PLANO, ACCION_LARGO = 0, 1
 
 
 def politicas_base(entorno) -> dict:

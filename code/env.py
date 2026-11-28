@@ -39,14 +39,20 @@ from gymnasium import spaces
 
 import data
 import reward
-from evaluate import COLUMNAS_BITACORA
 
+# Columnas de la bitácora (sección 3.8). direccion: +1 largo, -1 corto. tamano: unidades de BTC.
+# razon_salida: "horizonte", "stop", "take_profit" o "cierre".
+COLUMNAS_BITACORA = [
+    "entrada", "salida", "direccion", "razon_salida", "precio_entrada", "precio_salida",
+    "tamano", "pnl_bruto", "costos", "pnl_neto",
+]
 CAPITAL_INICIAL = 10_000.0  # USDT al inicio de cada episodio
 MULTIPLO_BARRERAS = 2.0  # stop y take-profit a ±2 desviaciones esperadas del horizonte
 HORAS_EPISODIO = 30 * 24  # ventanas de 30 días en entrenamiento
 FRACCION_RUINA = 0.5  # el gestor detiene la estrategia si el capital cae a la mitad
 LIMITE_OBSERVACION = data.Normalizador.LIMITE
-POSICION_DE_ACCION = (0, 1, -1)  # acción 0 plano, 1 largo, 2 corto
+ACCION_PLANO, ACCION_LARGO, ACCION_CORTO = 0, 1, 2
+POSICION_DE_ACCION = (0, 1, -1)  # posición objetivo de cada acción: plano, largo, corto
 VARIABLES_FISICAS = ["posicion", "rendimiento_abierto", "tiempo_en_posicion", "drawdown"]
 REGLAS_INTRABARRA = ("stop_primero", "take_profit_primero")
 CONTRIBUCIONES = ("por_paso", "terminal")
@@ -170,7 +176,7 @@ class EntornoTrading(gym.Env):
     # ----- Resultados del episodio ----------------------------------------------------------------
 
     def bitacora_df(self) -> pd.DataFrame:
-        """Operaciones cerradas con las columnas de evaluate.COLUMNAS_BITACORA.
+        """Operaciones cerradas con las columnas de COLUMNAS_BITACORA.
 
         Agrega la hora de la decisión de entrada y el capital al abrir, que sirven para el análisis
         de operaciones (sección 3.9).

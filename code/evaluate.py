@@ -288,6 +288,13 @@ def metricas_lineas_base(crear_entorno, curvas_benchmark: dict[str, pd.Series]) 
     return resultados
 
 
+def metricas_entre_semillas(por_semilla: dict[int, dict[str, float]]) -> dict[str, float]:
+    """Métricas de un agente en un fold: el promedio entre semillas de cada métrica, más la desviación
+    estándar del Sharpe entre semillas para reportar su dispersión (sección 3.5)."""
+    tabla = pd.DataFrame.from_dict(por_semilla, orient="index")
+    return {**tabla.mean().to_dict(), "sharpe_desviacion_semillas": float(tabla["sharpe"].std())}
+
+
 def tabla_metricas(resultados: dict[str, dict[int, dict[str, float]]]) -> pd.DataFrame:
     """Métricas por fold y agregadas, con la forma de artifacts/metrics_summary.csv.
 

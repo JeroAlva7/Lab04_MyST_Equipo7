@@ -16,8 +16,11 @@ Los modelos quedan en models/ (fuera del repositorio) y se reutilizan si ya exis
 configuración, así volver a correr main.py no repite el entrenamiento. Desde un clon limpio se
 entrena todo.
 """
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
+from itertools import repeat
 from pathlib import Path
 
 import pandas as pd
@@ -50,14 +53,17 @@ def etapa_validacion(datos: pd.DataFrame) -> dict[int, dict[str, int]]:
 
     Entrena cada configuración de train.REJILLA con cada semilla de train.SEMILLAS, la evalúa en
     validación contra los dos benchmarks y guarda artifacts/validation_results_fold_k.csv.
-    Devuelve la configuración elegida de cada algoritmo por fold (mayor Sharpe medio).
+    Cada fold corre en su propio proceso: los folds no comparten nada y cada corrida tiene su
+    semilla, así que el resultado es el mismo que en serie. Devuelve la configuración elegida de
+    cada algoritmo por fold (mayor Sharpe medio).
     """
     cierres_sp500 = evaluate.cargar_sp500()
+    procesos = min(len(data.FOLDS), max(1, (os.cpu_count() or 2) // 2))
+    with ProcessPoolExecutor(max_workers=procesos) as grupo:
+        por_fold = dict(zip(data.FOLDS, grupo.map(train.busqueda_en_fold, repeat(datos), data.FOLDS,
+                                                  repeat(cierres_sp500))))
     elegidas = {}
-    for fold in data.FOLDS:
-        partes, _ = data.preparar_fold(datos, fold)
-        curvas = evaluate.benchmarks(partes["validacion"].barras, cierres_sp500)
-        resultados = train.buscar_hiperparametros(fold, partes, curvas)
+    for fold, resultados in por_fold.items():
         ruta = train.guardar_resultados_validacion(resultados, fold)
         elegidas[fold] = train.mejor_configuracion(resultados)
         print(f"   {ruta.relative_to(RAIZ)}: configuraciones elegidas {elegidas[fold]}", flush=True)

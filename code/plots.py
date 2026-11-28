@@ -504,7 +504,7 @@ def pdf_eda(datos: pd.DataFrame, reporte: dict, resumen: dict[str, pd.DataFrame]
     """
     entrenamiento = data.particionar(datos, max(data.FOLDS))["entrenamiento"]
     ruta.parent.mkdir(parents=True, exist_ok=True)
-    with PdfPages(ruta) as pdf:
+    with PdfPages(ruta, metadata={"CreationDate": None}) as pdf:  # sin fecha: el PDF no cambia entre corridas
         _pagina_datos(pdf, datos, reporte, resumen["folds"], resumen["regimenes"])
         _pagina_regimenes(pdf, entrenamiento, resumen["regimenes"])
         _pagina_distribucion(pdf, entrenamiento, resumen["distribucion"])
